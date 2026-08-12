@@ -207,6 +207,23 @@ def parse_memory_region(node: ET.Element | None, label: str, target_name: str) -
     return int(start_address, 0), int(size, 0)
 
 
+def rewrite_linker_memory_region(linker_script_text: str, region_name: str, attributes: str, start: int, size: int) -> str:
+    region_pattern = (
+        rf"(?im)^\s*\b{region_name}\b\s*\([^)]*\)\s*:\s*"
+        rf"ORIGIN\s*=\s*(?:0x)?[0-9a-fA-F]+,\s*LENGTH\s*=\s*(?:0x)?[0-9a-fA-F]+"
+    )
+    updated_text, replacements = re.subn(
+        region_pattern,
+        f"{region_name} ({attributes}) : ORIGIN = 0x{start:x}, LENGTH = 0x{size:x}",
+        linker_script_text,
+        count=1,
+    )
+    if replacements != 1:
+        raise RuntimeError(f"Failed to rewrite {region_name} memory region in linker script")
+
+    return updated_text
+
+
 def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int, int], tuple[int, int]]:
     root = ET.parse(KEIL_PROJECT).getroot()
     for target in root.findall(".//Target"):
@@ -313,23 +330,20 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     linker_script_path = target_dir / target_config["linker"].name
 
     linker_script_text = target_config["linker"].read_text()
-    linker_script_text, flash_replacements = re.subn(
-        r"FLASH \([^)]*\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
-        f"FLASH (rx) : ORIGIN = 0x{flash_region[0]:x}, LENGTH = 0x{flash_region[1]:x}",
+    linker_script_text = rewrite_linker_memory_region(
         linker_script_text,
-        count=1,
+        "FLASH",
+        "rx",
+        flash_region[0],
+        flash_region[1],
     )
-    if flash_replacements != 1:
-        raise RuntimeError(f"Failed to rewrite FLASH memory region in linker script for {name}")
-
-    linker_script_text, ram_replacements = re.subn(
-        r"RAM \([^)]*\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
-        f"RAM (rwx) : ORIGIN = 0x{ram_region[0]:x}, LENGTH = 0x{ram_region[1]:x}",
+    linker_script_text = rewrite_linker_memory_region(
         linker_script_text,
-        count=1,
+        "RAM",
+        "rwx",
+        ram_region[0],
+        ram_region[1],
     )
-    if ram_replacements != 1:
-        raise RuntimeError(f"Failed to rewrite RAM memory region in linker script for {name}")
     linker_script_text = linker_script_text.replace(
         'INCLUDE "nrf5x_common.ld"',
         f'INCLUDE "{(REPO_ROOT / "components" / "toolchain" / "gcc" / "nrf5x_common.ld").resolve()}"',
