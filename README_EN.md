@@ -77,11 +77,14 @@ Generated artifacts:
 
 - `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
 - `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
+- `build/nRF51822_xxAB/epd42-bw-merged.hex`
+- `build/nRF51802_xxAA/epd42-bwr-merged.hex`
 
 Notes:
 
-- The GCC / Actions artifacts contain the application firmware only; they do not bundle the Nordic SoftDevice binary.
-- The current nRF51 targets depend on `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`, not `s132`.
+- The regular `*.hex` / `*.bin` artifacts still contain the application firmware only.
+- `*-merged.hex` combines the application firmware with the Nordic SoftDevice binary from `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`.
+- The current nRF51 targets depend on `S130`, not `s132`.
 
 You can use J-Link or DAPLink as the programmer (you can use [RTTView](https://github.com/XIVN1987/RTTView) to view RTT logs).
 
@@ -90,8 +93,10 @@ You can use J-Link or DAPLink as the programmer (you can use [RTTView](https://g
 > If you do not modify the code, it is recommended to download the binary firmware from [Releases](https://github.com/tsl0922/EPD-nRF51/releases) for immediate use.
 
 1. Erase all (if Keil cannot erase, try using the programmer's upper computer software to erase)
-2. Switch to the `flash_softdevice` Target corresponding to the MCU, **do not compile, just download** (only needs to be flashed once)
-3. Switch to the Target corresponding to the MCU, compile first, then download
+2. Choose one:
+   - Switch to the `flash_softdevice` Target corresponding to the MCU, **do not compile, just download** (only needs to be flashed once), then flash the regular application `*.hex` / `*.bin`
+   - Flash the corresponding `*-merged.hex` directly
+3. If you use the regular Target, compile first and then download
 
 ## Acknowledgements
 

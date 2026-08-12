@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 KEIL_PROJECT = REPO_ROOT / "Keil" / "EPD.uvprojx"
 KEIL_DIR = KEIL_PROJECT.parent
 BUILD_DIR = REPO_ROOT / "build"
+HEX_RECORD_DATA_LENGTH = 32
 
 TARGET_CONFIG = {
     "nRF51822_xxAB": {
@@ -20,12 +21,14 @@ TARGET_CONFIG = {
         "startup": REPO_ROOT / "components" / "toolchain" / "gcc" / "gcc_startup_nrf51.s",
         "system": REPO_ROOT / "components" / "toolchain" / "system_nrf51.c",
         "linker": REPO_ROOT / "components" / "softdevice" / "s130" / "toolchain" / "armgcc" / "armgcc_s130_nrf51822_xxab.ld",
+        "softdevice": REPO_ROOT / "components" / "softdevice" / "s130" / "hex" / "s130_nrf51_2.0.1_softdevice.hex",
     },
     "nRF51802_xxAA": {
         "artifact_name": "epd42-bwr",
         "startup": REPO_ROOT / "components" / "toolchain" / "gcc" / "gcc_startup_nrf51.s",
         "system": REPO_ROOT / "components" / "toolchain" / "system_nrf51.c",
         "linker": REPO_ROOT / "components" / "softdevice" / "s130" / "toolchain" / "armgcc" / "armgcc_s130_nrf51822_xxaa.ld",
+        "softdevice": REPO_ROOT / "components" / "softdevice" / "s130" / "hex" / "s130_nrf51_2.0.1_softdevice.hex",
     },
 }
 
@@ -59,6 +62,136 @@ def run(cmd: list[str]) -> None:
 
 def normalize_project_path(raw_path: str) -> Path:
     return (KEIL_DIR / raw_path.replace("\\", "/")).resolve()
+
+
+def parse_hex_file(path: Path) -> tuple[dict[int, int], int | None]:
+    """Return absolute-addressed Intel HEX data and the optional start linear address."""
+    data: dict[int, int] = {}
+    start_linear_address: int | None = None
+    upper_address = 0
+
+    for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not line.startswith(":"):
+            raise RuntimeError(f"Invalid Intel HEX record in {path}:{line_number}")
+
+        record = bytes.fromhex(line[1:])
+        if len(record) < 5:
+            raise RuntimeError(f"Truncated Intel HEX record in {path}:{line_number}")
+
+        byte_count = record[0]
+        if len(record) != byte_count + 5:
+            raise RuntimeError(f"Length mismatch in Intel HEX record in {path}:{line_number}")
+
+        if (sum(record) & 0xFF) != 0:
+            raise RuntimeError(f"Checksum mismatch in Intel HEX record in {path}:{line_number}")
+
+        address = (record[1] << 8) | record[2]
+        record_type = record[3]
+        payload = record[4:-1]
+
+        if record_type == 0x00:
+            absolute_address = upper_address + address
+            for offset, value in enumerate(payload):
+                current_address = absolute_address + offset
+                existing = data.get(current_address)
+                if existing is not None and existing != value:
+                    raise RuntimeError(
+                        f"Conflicting Intel HEX data at 0x{current_address:08x} while reading {path}"
+                    )
+                data[current_address] = value
+        elif record_type == 0x01:
+            break
+        elif record_type == 0x02:
+            upper_address = int.from_bytes(payload, "big") << 4
+        elif record_type == 0x04:
+            upper_address = int.from_bytes(payload, "big") << 16
+        elif record_type == 0x05:
+            start_linear_address = int.from_bytes(payload, "big")
+
+    return data, start_linear_address
+
+
+def make_hex_record(record_type: int, address: int, payload: bytes) -> str:
+    """Encode a single Intel HEX record."""
+    byte_count = len(payload)
+    record = bytearray([byte_count, (address >> 8) & 0xFF, address & 0xFF, record_type])
+    record.extend(payload)
+    checksum = (-sum(record)) & 0xFF
+    return ":" + record.hex().upper() + f"{checksum:02X}"
+
+
+def write_hex_file(path: Path, data: dict[int, int], start_linear_address: int | None = None) -> None:
+    """Write absolute-addressed data to an Intel HEX file."""
+    lines: list[str] = []
+    current_upper_address: int | None = None
+
+    sorted_addresses = sorted(data)
+    chunk_start = 0
+    while chunk_start < len(sorted_addresses):
+        start_address = sorted_addresses[chunk_start]
+        chunk = [start_address]
+        chunk_start += 1
+        chunk_upper_address = start_address >> 16
+
+        while chunk_start < len(sorted_addresses):
+            next_address = sorted_addresses[chunk_start]
+            if (
+                next_address != chunk[-1] + 1
+                or len(chunk) >= HEX_RECORD_DATA_LENGTH
+                or (next_address >> 16) != chunk_upper_address
+            ):
+                break
+            chunk.append(next_address)
+            chunk_start += 1
+
+        upper_address = start_address >> 16
+        if current_upper_address != upper_address:
+            current_upper_address = upper_address
+            lines.append(make_hex_record(0x04, 0x0000, upper_address.to_bytes(2, "big")))
+
+        payload = bytes(data[address] for address in chunk)
+        lines.append(make_hex_record(0x00, start_address & 0xFFFF, payload))
+
+    if start_linear_address is not None:
+        lines.append(make_hex_record(0x05, 0x0000, start_linear_address.to_bytes(4, "big")))
+
+    lines.append(":00000001FF")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def merge_hex_files(output_path: Path, *input_paths: Path, prefer_last_start_linear_address: bool = True) -> None:
+    """Merge Intel HEX inputs and optionally prefer the last start linear address."""
+    merged_data: dict[int, int] = {}
+    start_linear_address: int | None = None
+
+    for input_path in input_paths:
+        data, file_start_linear_address = parse_hex_file(input_path)
+        for address, value in data.items():
+            existing = merged_data.get(address)
+            if existing is not None and existing != value:
+                raise RuntimeError(f"Conflicting Intel HEX data at 0x{address:08x} while merging {input_path}")
+            merged_data[address] = value
+
+        if (
+            file_start_linear_address is not None
+            and start_linear_address is not None
+            and file_start_linear_address != start_linear_address
+            and not prefer_last_start_linear_address
+        ):
+            raise RuntimeError(
+                "Conflicting start linear addresses while merging "
+                f"{input_path}: 0x{start_linear_address:08x} vs 0x{file_start_linear_address:08x}"
+            )
+
+        if file_start_linear_address is not None and (
+            prefer_last_start_linear_address or start_linear_address is None
+        ):
+            start_linear_address = file_start_linear_address
+
+    write_hex_file(output_path, merged_data, start_linear_address)
 
 
 def read_target(name: str) -> tuple[list[Path], list[str], list[Path]]:
@@ -156,6 +289,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     artifact_base = target_dir / target_config["artifact_name"]
     elf_path = artifact_base.with_suffix(".elf")
     hex_path = artifact_base.with_suffix(".hex")
+    merged_hex_path = artifact_base.with_name(f"{artifact_base.name}-merged").with_suffix(".hex")
     bin_path = artifact_base.with_suffix(".bin")
     map_path = artifact_base.with_suffix(".map")
     linker_script_path = target_dir / target_config["linker"].name
@@ -183,6 +317,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     run([size, str(elf_path)])
     run([objcopy, "-O", "ihex", str(elf_path), str(hex_path)])
     run([objcopy, "-O", "binary", str(elf_path), str(bin_path)])
+    merge_hex_files(merged_hex_path, target_config["softdevice"], hex_path)
 
 
 def parse_args() -> argparse.Namespace:

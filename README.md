@@ -77,11 +77,14 @@ python3 tools/build_firmware.py --target nRF51802_xxAA
 
 - `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
 - `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
+- `build/nRF51822_xxAB/epd42-bw-merged.hex`
+- `build/nRF51802_xxAA/epd42-bwr-merged.hex`
 
 说明：
 
-- GCC / Actions 产物只包含应用固件，不会把 Nordic SoftDevice 二进制一起打包进去。
-- 当前 nRF51 目标依赖的是 `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`，不是 `s132`。
+- 普通 `*.hex` / `*.bin` 仍然只包含应用固件。
+- `*-merged.hex` 会把应用固件和 Nordic SoftDevice (`components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`) 合并到同一个可烧录文件中。
+- 当前 nRF51 目标依赖的是 `S130`，不是 `s132`。
 
 烧录器可以使用 J-Link 或者 DAPLink（可使用 [RTTView](https://github.com/XIVN1987/RTTView) 查看 RTT 日志）。
 
@@ -90,8 +93,10 @@ python3 tools/build_firmware.py --target nRF51802_xxAA
 > 如不修改代码，建议到 [Releases](https://github.com/tsl0922/EPD-nRF51/releases) 下载二进制固件，开箱即用。
 
 1. 全部擦除 (Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试)
-2. 切换到 MCU 对应的 `flash_softdevice` `Target`，**不要编译直接下载**（只需刷一次）
-3. 切换到 MCU 对应的 `Target`，先编译再下载
+2. 二选一：
+   - 切换到 MCU 对应的 `flash_softdevice` `Target`，**不要编译直接下载**（只需刷一次），然后再刷普通应用 `*.hex` / `*.bin`
+   - 直接刷对应的 `*-merged.hex`
+3. 如使用普通 `Target`，先编译再下载
 
 ## 致谢
 
