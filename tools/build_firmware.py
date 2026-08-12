@@ -312,18 +312,23 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     linker_script_path = target_dir / target_config["linker"].name
 
     linker_script_text = target_config["linker"].read_text()
-    linker_script_text = re.sub(
-        r"FLASH \(rx\) : ORIGIN = 0x[0-9a-fA-F]+, LENGTH = 0x[0-9a-fA-F]+",
+    linker_script_text, flash_replacements = re.subn(
+        r"FLASH \([^)]+\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
         f"FLASH (rx) : ORIGIN = 0x{flash_region[0]:x}, LENGTH = 0x{flash_region[1]:x}",
         linker_script_text,
         count=1,
     )
-    linker_script_text = re.sub(
-        r"RAM \(rwx\) :  ORIGIN = 0x[0-9a-fA-F]+, LENGTH = 0x[0-9a-fA-F]+",
-        f"RAM (rwx) :  ORIGIN = 0x{ram_region[0]:x}, LENGTH = 0x{ram_region[1]:x}",
+    if flash_replacements != 1:
+        raise RuntimeError(f"Failed to rewrite FLASH memory region in linker script for {name}")
+
+    linker_script_text, ram_replacements = re.subn(
+        r"RAM \([^)]+\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
+        f"RAM (rwx) : ORIGIN = 0x{ram_region[0]:x}, LENGTH = 0x{ram_region[1]:x}",
         linker_script_text,
         count=1,
     )
+    if ram_replacements != 1:
+        raise RuntimeError(f"Failed to rewrite RAM memory region in linker script for {name}")
     linker_script_text = linker_script_text.replace(
         'INCLUDE "nrf5x_common.ld"',
         f'INCLUDE "{(REPO_ROOT / "components" / "toolchain" / "gcc" / "nrf5x_common.ld").resolve()}"',
