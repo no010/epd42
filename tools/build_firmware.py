@@ -15,6 +15,7 @@ KEIL_PROJECT = REPO_ROOT / "Keil" / "EPD.uvprojx"
 KEIL_DIR = KEIL_PROJECT.parent
 BUILD_DIR = REPO_ROOT / "build"
 HEX_RECORD_DATA_LENGTH = 32
+CONFIG_FLASH_PAGE_SIZE = 0x400
 
 TARGET_CONFIG = {
     "nRF51822_xxAB": {
@@ -43,6 +44,7 @@ COMMON_FLAGS = [
     "-mabi=aapcs",
     "-ffunction-sections",
     "-fdata-sections",
+    "-flto",
     "-fno-common",
     "-fshort-enums",
     "-fno-strict-aliasing",
@@ -225,6 +227,19 @@ def rewrite_linker_memory_region(linker_script_text: str, region_name: str, attr
     return updated_text
 
 
+def reserve_config_flash_page(flash_region: tuple[int, int]) -> tuple[int, int]:
+    start, size = flash_region
+    if size <= CONFIG_FLASH_PAGE_SIZE:
+        raise RuntimeError("Application flash region is too small to reserve the persistent config page")
+    return start, size - CONFIG_FLASH_PAGE_SIZE
+
+
+def ensure_hex_max_address_below(path: Path, limit_exclusive: int) -> None:
+    data, _ = parse_hex_file(path)
+    if data and max(data) >= limit_exclusive:
+        raise RuntimeError(f"{path.name} overlaps the reserved config flash page at 0x{limit_exclusive:08x}")
+
+
 def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int, int], tuple[int, int]]:
     root = ET.parse(KEIL_PROJECT).getroot()
     for target in root.findall(".//Target"):
@@ -295,6 +310,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     obj_dir.mkdir(parents=True, exist_ok=True)
 
     sources, defines, include_paths, flash_region, ram_region = read_target(name)
+    app_flash_region = reserve_config_flash_page(flash_region)
     sources.extend([target_config["system"], target_config["startup"]])
 
     include_args = [f"-I{path}" for path in include_paths]
@@ -335,8 +351,8 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
         linker_script_text,
         "FLASH",
         "rx",
-        flash_region[0],
-        flash_region[1],
+        app_flash_region[0],
+        app_flash_region[1],
     )
     linker_script_text = rewrite_linker_memory_region(
         linker_script_text,
@@ -355,6 +371,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
         "-mcpu=cortex-m0",
         "-mthumb",
         "-mabi=aapcs",
+        "-flto",
         f"-T{linker_script_path}",
         f"-Wl,-Map={map_path}",
         "-Wl,--gc-sections",
@@ -368,6 +385,9 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     run([objcopy, "-O", "ihex", str(elf_path), str(hex_path)])
     run([objcopy, "-O", "binary", str(elf_path), str(bin_path)])
     merge_hex_files(merged_hex_path, target_config["softdevice"], hex_path)
+    config_flash_start = app_flash_region[0] + app_flash_region[1]
+    ensure_hex_max_address_below(hex_path, config_flash_start)
+    ensure_hex_max_address_below(merged_hex_path, config_flash_start)
 
 
 def parse_args() -> argparse.Namespace:

@@ -38,6 +38,7 @@
 #define ARRAY_SIZE(arr)                    (sizeof(arr) / sizeof((arr)[0]))
 #define EPD_CONFIG_SIZE                    (sizeof(epd_config_t) / sizeof(uint8_t))
 #define EPD_PROTOCOL_CONFIG_SIZE           11
+#define EPD_GPIO_PIN_MAX                   31
 
 STATIC_ASSERT(EPD_PROTOCOL_CONFIG_SIZE <= EPD_CONFIG_SIZE);
 
@@ -94,6 +95,38 @@ static uint8_t epd_driver_protocol_id_from_internal(uint8_t id)
     }
 
     return EPD_MODEL_4IN2;
+}
+
+static bool epd_required_pin_is_valid(uint8_t pin)
+{
+    return pin <= EPD_GPIO_PIN_MAX;
+}
+
+static bool epd_optional_pin_is_valid(uint8_t pin)
+{
+    return pin == 0xFF || pin <= EPD_GPIO_PIN_MAX;
+}
+
+static bool epd_pin_mapping_is_valid(epd_config_t const *cfg)
+{
+    return epd_required_pin_is_valid(cfg->mosi_pin)
+        && epd_required_pin_is_valid(cfg->sclk_pin)
+        && epd_required_pin_is_valid(cfg->cs_pin)
+        && epd_required_pin_is_valid(cfg->dc_pin)
+        && epd_required_pin_is_valid(cfg->rst_pin)
+        && epd_required_pin_is_valid(cfg->busy_pin)
+        && epd_required_pin_is_valid(cfg->bs_pin)
+        && epd_optional_pin_is_valid(cfg->wakeup_pin)
+        && epd_optional_pin_is_valid(cfg->led_pin)
+        && epd_optional_pin_is_valid(cfg->reserved[0]);
+}
+
+static void epd_config_reset_to_default(epd_config_t *cfg)
+{
+    uint8_t const default_cfg[] = EPD_CFG_DEFAULT;
+
+    memset(cfg, 0xFF, sizeof(*cfg));
+    memcpy(cfg, default_cfg, ARRAY_SIZE(default_cfg));
 }
 
 static void epd_config_protocol_export(epd_config_t const *cfg, uint8_t *data)
@@ -174,6 +207,17 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
     {
       case EPD_CMD_SET_PINS:
           if (length < 8) return;
+          if (!epd_required_pin_is_valid(p_data[1])
+              || !epd_required_pin_is_valid(p_data[2])
+              || !epd_required_pin_is_valid(p_data[3])
+              || !epd_required_pin_is_valid(p_data[4])
+              || !epd_required_pin_is_valid(p_data[5])
+              || !epd_required_pin_is_valid(p_data[6])
+              || !epd_required_pin_is_valid(p_data[7])
+              || (length > 8 && !epd_optional_pin_is_valid(p_data[8])))
+          {
+              return;
+          }
 
           DEV_Module_Exit();
 
@@ -409,8 +453,12 @@ static void epd_config_init(ble_epd_t * p_epd)
     // write default config
     if (is_empty_config)
     {
-        uint8_t cfg[] = EPD_CFG_DEFAULT;
-        memcpy(&p_epd->config, cfg, ARRAY_SIZE(cfg));
+        epd_config_reset_to_default(&p_epd->config);
+        epd_config_save(&p_epd->config);
+    }
+    else if (!epd_pin_mapping_is_valid(&p_epd->config))
+    {
+        epd_config_reset_to_default(&p_epd->config);
         epd_config_save(&p_epd->config);
     }
 
