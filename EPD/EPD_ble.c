@@ -39,6 +39,8 @@
 #define EPD_CONFIG_SIZE                    (sizeof(epd_config_t) / sizeof(uint8_t))
 #define EPD_PROTOCOL_CONFIG_SIZE           11
 
+STATIC_ASSERT(EPD_PROTOCOL_CONFIG_SIZE <= EPD_CONFIG_SIZE);
+
 /** EPD drivers */
 static epd_driver_t epd_drivers[] = {
     {EPD_DRIVER_4IN2, EPD_4IN2_Init, EPD_4IN2_Clear, 
