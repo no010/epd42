@@ -78,6 +78,11 @@ Generated artifacts:
 - `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
 - `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
 
+Notes:
+
+- The GCC / Actions artifacts contain the application firmware only; they do not bundle the Nordic SoftDevice binary.
+- The current nRF51 targets depend on `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`, not `s132`.
+
 You can use J-Link or DAPLink as the programmer (you can use [RTTView](https://github.com/XIVN1987/RTTView) to view RTT logs).
 
 **Flashing Process:**

@@ -78,6 +78,11 @@ python3 tools/build_firmware.py --target nRF51802_xxAA
 - `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
 - `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
 
+说明：
+
+- GCC / Actions 产物只包含应用固件，不会把 Nordic SoftDevice 二进制一起打包进去。
+- 当前 nRF51 目标依赖的是 `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`，不是 `s132`。
+
 烧录器可以使用 J-Link 或者 DAPLink（可使用 [RTTView](https://github.com/XIVN1987/RTTView) 查看 RTT 日志）。
 
 **刷机流程:**
