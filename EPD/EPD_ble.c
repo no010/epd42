@@ -25,7 +25,7 @@
 #include "nrf_log.h"
 
 #ifdef NRF51802
-#define EPD_CFG_DEFAULT {0x0A, 0x0B, 0x0C, 0x0D, 0x0D, 0x0E, 0x0F, 0x10, 0x03, 0x09, 0x03}
+#define EPD_CFG_DEFAULT {0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x03, 0x09, 0x03}
 #else
 #define EPD_CFG_DEFAULT {0x05, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x01, 0x07}
 #endif
@@ -37,6 +37,10 @@
 
 #define ARRAY_SIZE(arr)                    (sizeof(arr) / sizeof((arr)[0]))
 #define EPD_CONFIG_SIZE                    (sizeof(epd_config_t) / sizeof(uint8_t))
+#define EPD_PROTOCOL_CONFIG_SIZE           11
+#define EPD_GPIO_PIN_MAX                   31
+
+STATIC_ASSERT(EPD_PROTOCOL_CONFIG_SIZE <= EPD_CONFIG_SIZE);
 
 /** EPD drivers */
 static epd_driver_t epd_drivers[] = {
@@ -61,6 +65,73 @@ static epd_driver_t *epd_driver_get(uint8_t id)
       }
     }
     return NULL;
+}
+
+static uint8_t epd_driver_internal_id_from_any_id(uint8_t id)
+{
+    if (id == EPD_MODEL_4IN2_V2)
+    {
+        return EPD_DRIVER_4IN2_V2;
+    }
+
+    if (id >= EPD_DRIVER_4IN2 && id <= EPD_DRIVER_4IN2B_V2)
+    {
+        return id;
+    }
+
+    return 0;
+}
+
+static uint8_t epd_driver_protocol_id_from_internal(uint8_t id)
+{
+    if (id == EPD_DRIVER_4IN2_V2)
+    {
+        return EPD_MODEL_4IN2_V2;
+    }
+
+    if (id == EPD_DRIVER_4IN2B_V2)
+    {
+        return EPD_MODEL_4IN2B_V2;
+    }
+
+    return EPD_MODEL_4IN2;
+}
+
+static bool epd_required_pin_is_valid(uint8_t pin)
+{
+    return pin <= EPD_GPIO_PIN_MAX;
+}
+
+static bool epd_optional_pin_is_valid(uint8_t pin)
+{
+    return pin == 0xFF || pin <= EPD_GPIO_PIN_MAX;
+}
+
+static bool epd_pin_mapping_is_valid(epd_config_t const *cfg)
+{
+    return epd_required_pin_is_valid(cfg->mosi_pin)
+        && epd_required_pin_is_valid(cfg->sclk_pin)
+        && epd_required_pin_is_valid(cfg->cs_pin)
+        && epd_required_pin_is_valid(cfg->dc_pin)
+        && epd_required_pin_is_valid(cfg->rst_pin)
+        && epd_required_pin_is_valid(cfg->busy_pin)
+        && epd_required_pin_is_valid(cfg->bs_pin)
+        && epd_optional_pin_is_valid(cfg->wakeup_pin)
+        && epd_optional_pin_is_valid(cfg->led_pin);
+}
+
+static void epd_config_reset_to_default(epd_config_t *cfg)
+{
+    uint8_t const default_cfg[] = EPD_CFG_DEFAULT;
+
+    memset(cfg, 0xFF, sizeof(*cfg));
+    memcpy(cfg, default_cfg, ARRAY_SIZE(default_cfg));
+}
+
+static void epd_config_protocol_export(epd_config_t const *cfg, uint8_t *data)
+{
+    memcpy(data, cfg, EPD_PROTOCOL_CONFIG_SIZE);
+    data[7] = epd_driver_protocol_id_from_internal(cfg->driver_id);
 }
 
 static void fs_evt_handler(fs_evt_t const * const evt, fs_ret_t result)
@@ -135,6 +206,17 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
     {
       case EPD_CMD_SET_PINS:
           if (length < 8) return;
+          if (!epd_required_pin_is_valid(p_data[1])
+              || !epd_required_pin_is_valid(p_data[2])
+              || !epd_required_pin_is_valid(p_data[3])
+              || !epd_required_pin_is_valid(p_data[4])
+              || !epd_required_pin_is_valid(p_data[5])
+              || !epd_required_pin_is_valid(p_data[6])
+              || !epd_required_pin_is_valid(p_data[7])
+              || (length > 8 && !epd_optional_pin_is_valid(p_data[8])))
+          {
+              return;
+          }
 
           DEV_Module_Exit();
 
@@ -145,6 +227,10 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           EPD_RST_PIN = p_epd->config.rst_pin = p_data[5];
           EPD_BUSY_PIN = p_epd->config.busy_pin = p_data[6];
           EPD_BS_PIN = p_epd->config.bs_pin = p_data[7];
+          if (length > 8)
+          {
+              p_epd->config.reserved[0] = p_data[8];
+          }
           err_code = epd_config_save(&p_epd->config);
           NRF_LOG_DEBUG("epd_config_save: %d\n", err_code);
 
@@ -154,7 +240,8 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
       case EPD_CMD_INIT:
           if (length > 1)
           {
-              epd_driver_t *driver = epd_driver_get(p_data[1]);
+              uint8_t driver_id = epd_driver_internal_id_from_any_id(p_data[1]);
+              epd_driver_t *driver = epd_driver_get(driver_id);
               if (driver != NULL)
               {
                   p_epd->driver = driver;
@@ -196,7 +283,12 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
 
       case EPD_CMD_SET_CONFIG:
           if (length < 2) return;
-          memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+          {
+              uint8_t previous_driver_id = p_epd->config.driver_id;
+              memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+              uint8_t driver_id = epd_driver_internal_id_from_any_id(p_epd->config.driver_id);
+              p_epd->config.driver_id = (driver_id != 0) ? driver_id : previous_driver_id;
+          }
           epd_config_save(&p_epd->config);
           break;
 
@@ -237,7 +329,9 @@ static void on_write(ble_epd_t * p_epd, ble_evt_t * p_ble_evt)
         if (ble_srv_is_notification_enabled(p_evt_write->data))
         {
             p_epd->is_notification_enabled = true;
-            ble_epd_string_send(p_epd, (uint8_t *)&p_epd->config, sizeof(epd_config_t));
+            uint8_t config[EPD_PROTOCOL_CONFIG_SIZE];
+            epd_config_protocol_export(&p_epd->config, config);
+            ble_epd_string_send(p_epd, config, sizeof(config));
         }
         else
         {
@@ -358,8 +452,12 @@ static void epd_config_init(ble_epd_t * p_epd)
     // write default config
     if (is_empty_config)
     {
-        uint8_t cfg[] = EPD_CFG_DEFAULT;
-        memcpy(&p_epd->config, cfg, ARRAY_SIZE(cfg));
+        epd_config_reset_to_default(&p_epd->config);
+        epd_config_save(&p_epd->config);
+    }
+    else if (!epd_pin_mapping_is_valid(&p_epd->config))
+    {
+        epd_config_reset_to_default(&p_epd->config);
         epd_config_save(&p_epd->config);
     }
 
@@ -372,7 +470,18 @@ static void epd_config_init(ble_epd_t * p_epd)
     EPD_BUSY_PIN = p_epd->config.busy_pin;
     EPD_BS_PIN = p_epd->config.bs_pin;
 
-    p_epd->driver = epd_driver_get(p_epd->config.driver_id);
+    uint8_t driver_id = epd_driver_internal_id_from_any_id(p_epd->config.driver_id);
+    if (driver_id == 0)
+    {
+        driver_id = EPD_DRIVER_4IN2;
+    }
+    if (driver_id != p_epd->config.driver_id)
+    {
+        p_epd->config.driver_id = driver_id;
+        epd_config_save(&p_epd->config);
+    }
+
+    p_epd->driver = epd_driver_get(driver_id);
     if (p_epd->driver == NULL)
     {
         p_epd->driver = &epd_drivers[0];

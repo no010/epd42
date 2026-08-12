@@ -49,11 +49,42 @@ Address: https://pengwon.github.io/epd42/
 
 Scan the QR code above to join the WeChat group for more information.
 
+## Development
+
+> **Notice:**
+> - Local development still uses [Keil 5.36](https://img.anfulai.cn/bbs/96992/MDK536.EXE) or earlier, while this repository now also provides an `arm-none-eabi-gcc` build path for GitHub Actions automation.
+
 ## Compilation Targets
 
 - `nRF51822_xxAB`: Used to compile nRF51822 firmware, with built-in black and white dual-color version configuration
 - `nRF51802_xxAA`: Used to compile nRF51802 firmware, with built-in black, white, and red tri-color version configuration
 - `flash_softdevice` Target: Used to flash the Bluetooth protocol stack (only needs to be flashed once)
+
+### GitHub Actions / GCC build
+
+- Workflow: `.github/workflows/firmware.yml`
+- Build script: `python3 tools/build_firmware.py`
+- Output directory: `build/<target>/`
+
+Examples:
+
+```bash
+python3 tools/build_firmware.py --target nRF51822_xxAB
+python3 tools/build_firmware.py --target nRF51802_xxAA
+```
+
+Generated artifacts:
+
+- `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
+- `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
+- `build/nRF51822_xxAB/epd42-bw-merged.hex`
+- `build/nRF51802_xxAA/epd42-bwr-merged.hex`
+
+Notes:
+
+- The regular `*.hex` / `*.bin` artifacts still contain the application firmware only.
+- `*-merged.hex` combines the application firmware with the Nordic SoftDevice binary from `components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`.
+- The current nRF51 targets depend on `S130`, not `s132`.
 
 You can use J-Link or DAPLink as the programmer (you can use [RTTView](https://github.com/XIVN1987/RTTView) to view RTT logs).
 
@@ -62,8 +93,10 @@ You can use J-Link or DAPLink as the programmer (you can use [RTTView](https://g
 > If you do not modify the code, it is recommended to download the binary firmware from [Releases](https://github.com/tsl0922/EPD-nRF51/releases) for immediate use.
 
 1. Erase all (if Keil cannot erase, try using the programmer's upper computer software to erase)
-2. Switch to the `flash_softdevice` Target corresponding to the MCU, **do not compile, just download** (only needs to be flashed once)
-3. Switch to the Target corresponding to the MCU, compile first, then download
+2. Choose one:
+   - Switch to the `flash_softdevice` Target corresponding to the MCU, **do not compile, just download** (only needs to be flashed once), then flash the regular application `*.hex` / `*.bin`
+   - Flash the corresponding `*-merged.hex` directly
+3. If you use the regular Target, compile first and then download
 
 ## Acknowledgements
 

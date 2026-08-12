@@ -6,8 +6,6 @@ let reconnectTrys = 0;
 
 let canvas;
 let startTime;
-
-const MAX_PACKET_SIZE = 20;
 const EpdCmd = {
   SET_PINS: 0x00,
   INIT: 0x01,
@@ -45,38 +43,64 @@ async function handleError(error) {
   }
 }
 
-async function write(cmd, data) {
+async function write(cmd, data, withResponse = true) {
   if (!epdCharacteristic) {
     addLog("服务不可用，请检查蓝牙连接");
-    return;
+    return false;
   }
   let payload = [cmd];
   if (data) {
     if (typeof data == 'string') data = hex2bytes(data);
     if (data instanceof Uint8Array) data = Array.from(data);
     payload.push(...data)
-  };
-  if (payload.length > MAX_PACKET_SIZE) {
-    throw new Error("BLE packet too large!");
   }
   addLog(`<span class="action">⇑</span> ${bytes2hex(payload)}`);
-  await epdCharacteristic.writeValue(Uint8Array.from(payload));
+  try {
+    if (withResponse && epdCharacteristic.writeValueWithResponse) {
+      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
+    } else if (!withResponse && epdCharacteristic.writeValueWithoutResponse) {
+      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+    } else {
+      await epdCharacteristic.writeValue(Uint8Array.from(payload));
+    }
+  } catch (e) {
+    console.error(e);
+    if (e.message) addLog("write: " + e.message);
+    return false;
+  }
+  return true;
 }
 
 async function epdWrite(cmd, data) {
-  const chunkSize = MAX_PACKET_SIZE - 1;
-  const count = Math.round(data.length / chunkSize);
-  let chunkIdx = 0;
-
   if (typeof data == 'string') data = hex2bytes(data);
 
-  await write(EpdCmd.SEND_CMD, [cmd]);
+  const mtuSize = Math.max(1, Number(document.getElementById('mtusize').value) || 20);
+  const chunkSize = Math.max(1, mtuSize - 1);
+  const interleavedCount = Math.max(0, Number(document.getElementById('interleavedcount').value) || 0);
+  const count = Math.ceil(data.length / chunkSize);
+  let chunkIdx = 0;
+  let noReplyCount = 0;
+
+  if (!await write(EpdCmd.SEND_CMD, [cmd])) {
+    return false;
+  }
   for (let i = 0; i < data.length; i += chunkSize) {
     let currentTime = (new Date().getTime() - startTime) / 1000.0;
-    setStatus(`命令：0x${cmd.toString(16)}, 数据块: ${chunkIdx + 1}/${count + 1}, 总用时: ${currentTime}s`);
-    await write(EpdCmd.SEND_DATA, data.slice(i, i + chunkSize));
+    setStatus(`命令：0x${cmd.toString(16)}, 数据块: ${chunkIdx + 1}/${count}, 总用时: ${currentTime}s`);
+    if (noReplyCount > 0) {
+      if (!await write(EpdCmd.SEND_DATA, data.slice(i, i + chunkSize), false)) {
+        return false;
+      }
+      noReplyCount--;
+    } else {
+      if (!await write(EpdCmd.SEND_DATA, data.slice(i, i + chunkSize), true)) {
+        return false;
+      }
+      noReplyCount = interleavedCount;
+    }
     chunkIdx++;
   }
+  return true;
 }
 
 async function setDriver() {
@@ -135,7 +159,7 @@ async function sendimg() {
     await epdWrite(0x10, imgArray.slice(0, bwArrLen));
     await epdWrite(0x13, imgArray.slice(bwArrLen));
   } else {
-    await epdWrite(driver === "03" ? 0x10 : 0x13, imgArray);
+    await epdWrite(driver === "04" ? 0x24 : 0x13, imgArray);
   }
 
   if (mode === "4gray") {
@@ -177,12 +201,12 @@ async function preConnect() {
     }
   }
   else {
-    connectTrys = 0;
+    reconnectTrys = 0;
     try {
       bleDevice = await navigator.bluetooth.requestDevice({
         optionalServices: ['62750001-d828-918d-fb46-b6c11c675aec'],
         // acceptAllDevices: true
-        filters: [{ namePrefix: ['NRF_EPD_'] }]
+        filters: [{ namePrefix: 'NRF_EPD_' }]
       });
     } catch (e) {
       if (e.message) addLog(e.message);
@@ -199,7 +223,7 @@ async function preConnect() {
 }
 
 async function reConnect() {
-  connectTrys = 0;
+  reconnectTrys = 0;
   if (bleDevice != null && bleDevice.gatt.connected)
     bleDevice.gatt.disconnect();
   resetVariables();
@@ -222,9 +246,14 @@ async function connect() {
 
     await epdCharacteristic.startNotifications();
     epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-      addLog(`<span class="action">⇓</span> ${bytes2hex(event.target.value.buffer)}`);
-      document.getElementById("epdpins").value = bytes2hex(event.target.value.buffer.slice(0, 7));
-      document.getElementById("epddriver").value = bytes2hex(event.target.value.buffer.slice(7, 8));
+      const data = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
+      addLog(`<span class="action">⇓</span> ${bytes2hex(data)}`);
+      let pins = bytes2hex(data.slice(0, 7));
+      if (data.length > 10 && data[10] !== 0xFF) {
+        pins += bytes2hex(data.slice(10, 11));
+      }
+      document.getElementById("epdpins").value = pins;
+      document.getElementById("epddriver").value = bytes2hex(data.slice(7, 8));
     });
 
     await write(EpdCmd.INIT);

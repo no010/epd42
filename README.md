@@ -52,13 +52,39 @@
 ## 开发
 
 > **注意:**
-> - 必须使用 [Keil 5.36](https://img.anfulai.cn/bbs/96992/MDK536.EXE) 或以下版本，nRF51 SDK 只支持 V5 版本的 ARM 编译器，从 5.37 版本开始 Keil 已经不再内置 V5 版本编译器，需要手动安装。
+> - 本地继续使用 [Keil 5.36](https://img.anfulai.cn/bbs/96992/MDK536.EXE) 或以下版本进行开发；仓库新增了基于 `arm-none-eabi-gcc` 的构建脚本，供 GitHub Actions 自动构建使用。
 
 项目配置有几个 `Target`：
 
 - `nRF51822_xxAB`: 用于编译 nRF51822 固件, 内置黑白双色版本配置
 - `nRF51802_xxAA`: 用于编译 nRF51802 固件, 内置黑白红三色版本配置
 - `flash_softdevice` 结尾的 `Target`: 刷蓝牙协议栈用（只需刷一次）
+
+### GitHub Actions / GCC 构建
+
+- 工作流：`.github/workflows/firmware.yml`
+- 构建脚本：`python3 tools/build_firmware.py`
+- 产物目录：`build/<target>/`
+
+示例：
+
+```bash
+python3 tools/build_firmware.py --target nRF51822_xxAB
+python3 tools/build_firmware.py --target nRF51802_xxAA
+```
+
+对应产物：
+
+- `build/nRF51822_xxAB/epd42-bw.{elf,hex,bin,map}`
+- `build/nRF51802_xxAA/epd42-bwr.{elf,hex,bin,map}`
+- `build/nRF51822_xxAB/epd42-bw-merged.hex`
+- `build/nRF51802_xxAA/epd42-bwr-merged.hex`
+
+说明：
+
+- 普通 `*.hex` / `*.bin` 仍然只包含应用固件。
+- `*-merged.hex` 会把应用固件和 Nordic SoftDevice (`components/softdevice/s130/hex/s130_nrf51_2.0.1_softdevice.hex`) 合并到同一个可烧录文件中。
+- 当前 nRF51 目标依赖的是 `S130`，不是 `s132`。
 
 烧录器可以使用 J-Link 或者 DAPLink（可使用 [RTTView](https://github.com/XIVN1987/RTTView) 查看 RTT 日志）。
 
@@ -67,8 +93,10 @@
 > 如不修改代码，建议到 [Releases](https://github.com/tsl0922/EPD-nRF51/releases) 下载二进制固件，开箱即用。
 
 1. 全部擦除 (Keil 擦除后刷不了的话，使用烧录器的上位机软件擦除试试)
-2. 切换到 MCU 对应的 `flash_softdevice` `Target`，**不要编译直接下载**（只需刷一次）
-3. 切换到 MCU 对应的 `Target`，先编译再下载
+2. 二选一：
+   - 切换到 MCU 对应的 `flash_softdevice` `Target`，**不要编译直接下载**（只需刷一次），然后再刷普通应用 `*.hex` / `*.bin`
+   - 直接刷对应的 `*-merged.hex`
+3. 如使用普通 `Target`，先编译再下载
 
 ## 致谢
 

@@ -44,6 +44,9 @@
 # Generated output files
 Keil/Listings/*
 Keil/Objects/*
+build/
+__pycache__/
+tools/__pycache__/
 
 # Debugger files
 # define exception below if needed
