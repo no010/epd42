@@ -66,48 +66,28 @@ static epd_driver_t *epd_driver_get(uint8_t id)
 
 static uint8_t epd_driver_internal_id_from_any_id(uint8_t id)
 {
-    switch (id)
+    if (id == EPD_MODEL_4IN2_V2)
     {
-      case EPD_DRIVER_4IN2:
-        return EPD_DRIVER_4IN2;
-      case EPD_DRIVER_4IN2B_V2:
-        return EPD_DRIVER_4IN2B_V2;
-      case EPD_DRIVER_4IN2_V2:
-      case EPD_MODEL_4IN2_V2:
         return EPD_DRIVER_4IN2_V2;
-      default:
-        return 0;
     }
+
+    if (id >= EPD_DRIVER_4IN2 && id <= EPD_DRIVER_4IN2B_V2)
+    {
+        return id;
+    }
+
+    return 0;
 }
 
 static uint8_t epd_driver_protocol_id_from_internal(uint8_t id)
 {
-    switch (id)
-    {
-      case EPD_DRIVER_4IN2_V2:
-        return EPD_MODEL_4IN2_V2;
-      case EPD_DRIVER_4IN2B_V2:
-        return EPD_MODEL_4IN2B_V2;
-      case EPD_DRIVER_4IN2:
-      default:
-        return EPD_MODEL_4IN2;
-    }
+    return (id == EPD_DRIVER_4IN2_V2) ? EPD_MODEL_4IN2_V2 : id;
 }
 
 static void epd_config_protocol_export(epd_config_t const *cfg, uint8_t *data)
 {
-    memset(data, 0xFF, EPD_PROTOCOL_CONFIG_SIZE);
-    data[0] = cfg->mosi_pin;
-    data[1] = cfg->sclk_pin;
-    data[2] = cfg->cs_pin;
-    data[3] = cfg->dc_pin;
-    data[4] = cfg->rst_pin;
-    data[5] = cfg->busy_pin;
-    data[6] = cfg->bs_pin;
+    memcpy(data, cfg, EPD_PROTOCOL_CONFIG_SIZE);
     data[7] = epd_driver_protocol_id_from_internal(cfg->driver_id);
-    data[8] = cfg->wakeup_pin;
-    data[9] = cfg->led_pin;
-    data[10] = cfg->reserved[0];
 }
 
 static void fs_evt_handler(fs_evt_t const * const evt, fs_ret_t result)
@@ -248,15 +228,11 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
 
       case EPD_CMD_SET_CONFIG:
           if (length < 2) return;
+          memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+          uint8_t driver_id = epd_driver_internal_id_from_any_id(p_epd->config.driver_id);
+          if (driver_id != 0)
           {
-              epd_config_t config = p_epd->config;
-              memcpy(&config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
-              uint8_t driver_id = epd_driver_internal_id_from_any_id(config.driver_id);
-              if (driver_id != 0)
-              {
-                  config.driver_id = driver_id;
-              }
-              p_epd->config = config;
+              p_epd->config.driver_id = driver_id;
           }
           epd_config_save(&p_epd->config);
           break;
