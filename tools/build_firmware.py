@@ -257,6 +257,7 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int
                 seen_include_paths.add(path)
                 include_paths.append(path)
 
+        # Keil stores the application flash/RAM regions for these targets in OCR_RVCT4/OCR_RVCT9.
         flash_region = parse_memory_region(target_memories.find("OCR_RVCT4"), "flash", name)
         ram_region = parse_memory_region(target_memories.find("OCR_RVCT9"), "RAM", name)
 
@@ -313,7 +314,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
 
     linker_script_text = target_config["linker"].read_text()
     linker_script_text, flash_replacements = re.subn(
-        r"FLASH \([^)]+\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
+        r"FLASH \([^)]*\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
         f"FLASH (rx) : ORIGIN = 0x{flash_region[0]:x}, LENGTH = 0x{flash_region[1]:x}",
         linker_script_text,
         count=1,
@@ -322,7 +323,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
         raise RuntimeError(f"Failed to rewrite FLASH memory region in linker script for {name}")
 
     linker_script_text, ram_replacements = re.subn(
-        r"RAM \([^)]+\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
+        r"RAM \([^)]*\)\s*:\s*ORIGIN = 0x[0-9a-fA-F]+,\s*LENGTH = 0x[0-9a-fA-F]+",
         f"RAM (rwx) : ORIGIN = 0x{ram_region[0]:x}, LENGTH = 0x{ram_region[1]:x}",
         linker_script_text,
         count=1,
