@@ -66,6 +66,14 @@ enum EPD_DRIVER_IDS
     EPD_DRIVER_4IN2B_V2,
 };
 
+/**< EPD protocol model IDs compatible with upstream v1.5. */
+enum EPD_PROTOCOL_MODEL_IDS
+{
+    EPD_MODEL_4IN2 = 1,
+    EPD_MODEL_4IN2B_V2 = 3,
+    EPD_MODEL_4IN2_V2 = 4,
+};
+
 /**@brief EPD driver structure.
  *
  * @details This structure contains epd driver functions.

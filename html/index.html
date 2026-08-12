@@ -154,7 +154,7 @@
                     <label for="epddriver">驱动</label>
                     <select id="epddriver">
                         <option value="01">EPD_4in2</option>
-                        <option value="02">EPD_4in2_V2</option>
+                        <option value="04">EPD_4in2_V2</option>
                         <option value="03">EPD_4in2b_V2</option>
                     </select>
                     <label for="epdpins">引脚</label>
@@ -222,8 +222,8 @@
         <fieldset>
             <legend>提示</legend>
             <ul>
-                <li><b>驱动选择：</b>黑白屏可尝试 EPD_4in2 / EPD_4in2_V2, 三色屏选择 EPD_4in2b_V2 (选错驱动可能会导致任何未知的异常，重启即可恢复）</li>
-                <li><b>引脚配置：</b>格式为十六进制，顺序：MOSI/SCLK/CS/DC/ST/BUSY/BS，必须按此顺序包含完整的 7 个引脚配置（没有用到的引脚可配置为 <code>FF</code>）
+                <li><b>驱动选择：</b>黑白屏可尝试 EPD_4in2 / EPD_4in2_V2, 三色屏选择 EPD_4in2b_V2；网页里的驱动 ID 已与上游 v1.5 对齐：<code>01</code>/<code>04</code>/<code>03</code>。</li>
+                <li><b>引脚配置：</b>格式为十六进制，顺序：MOSI/SCLK/CS/DC/ST/BUSY/BS，默认填写 7 个引脚；如果需要兼容上游 v1.5 的配置通知/调试，也可以在末尾额外追加 1 个可选 EN 引脚（没有用到的引脚可配置为 <code>FF</code>）
                 </li>
                 <li>
                     <b>指令列表（指令和参数全部要使用十六进制）：</b>
@@ -232,7 +232,7 @@
                             <ul>
                                 <li><code>00</code>+<code>引脚配置</code>: 设置引脚映射（见上面引脚配置）</li>
                                 <li><code>01</code>+<code>驱动 ID</code>: 驱动初始化（支持的驱动 ID:
-                                    <code>01</code>/<code>02</code>/<code>03</code>）
+                                    <code>01</code>/<code>04</code>/<code>03</code>）
                                 </li>
                                 <li><code>02</code>: 清空屏幕（把屏幕刷为白色）</li>
                                 <li><code>03</code>+<code>命令</code>: 发送命令到屏幕（请参考屏幕主控手册）</li>

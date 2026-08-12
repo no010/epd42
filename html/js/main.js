@@ -159,7 +159,7 @@ async function sendimg() {
     await epdWrite(0x10, imgArray.slice(0, bwArrLen));
     await epdWrite(0x13, imgArray.slice(bwArrLen));
   } else {
-    await epdWrite(driver === "03" ? 0x10 : 0x13, imgArray);
+    await epdWrite(driver === "04" ? 0x24 : 0x13, imgArray);
   }
 
   if (mode === "4gray") {
@@ -246,9 +246,14 @@ async function connect() {
 
     await epdCharacteristic.startNotifications();
     epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-      addLog(`<span class="action">⇓</span> ${bytes2hex(event.target.value.buffer)}`);
-      document.getElementById("epdpins").value = bytes2hex(event.target.value.buffer.slice(0, 7));
-      document.getElementById("epddriver").value = bytes2hex(event.target.value.buffer.slice(7, 8));
+      const data = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
+      addLog(`<span class="action">⇓</span> ${bytes2hex(data)}`);
+      let pins = bytes2hex(data.slice(0, 7));
+      if (data.length > 10 && data[10] !== 0xFF) {
+        pins += bytes2hex(data.slice(10, 11));
+      }
+      document.getElementById("epdpins").value = pins;
+      document.getElementById("epddriver").value = bytes2hex(data.slice(7, 8));
     });
 
     await write(EpdCmd.INIT);
