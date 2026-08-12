@@ -81,7 +81,17 @@ static uint8_t epd_driver_internal_id_from_any_id(uint8_t id)
 
 static uint8_t epd_driver_protocol_id_from_internal(uint8_t id)
 {
-    return (id == EPD_DRIVER_4IN2_V2) ? EPD_MODEL_4IN2_V2 : id;
+    if (id == EPD_DRIVER_4IN2_V2)
+    {
+        return EPD_MODEL_4IN2_V2;
+    }
+
+    if (id == EPD_DRIVER_4IN2B_V2)
+    {
+        return EPD_MODEL_4IN2B_V2;
+    }
+
+    return EPD_MODEL_4IN2;
 }
 
 static void epd_config_protocol_export(epd_config_t const *cfg, uint8_t *data)
@@ -228,11 +238,13 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
 
       case EPD_CMD_SET_CONFIG:
           if (length < 2) return;
-          memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
-          uint8_t driver_id = epd_driver_internal_id_from_any_id(p_epd->config.driver_id);
-          if (driver_id != 0)
           {
-              p_epd->config.driver_id = driver_id;
+              memcpy(&p_epd->config, &p_data[1], (length - 1 > EPD_CONFIG_SIZE) ? EPD_CONFIG_SIZE : length - 1);
+              uint8_t driver_id = epd_driver_internal_id_from_any_id(p_epd->config.driver_id);
+              if (driver_id != 0)
+              {
+                  p_epd->config.driver_id = driver_id;
+              }
           }
           epd_config_save(&p_epd->config);
           break;
