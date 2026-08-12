@@ -217,7 +217,7 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int
         a_controls = target.find("./TargetOption/TargetArmAds/Aads/VariousControls")
         target_memories = target.find("./TargetOption/TargetArmAds/ArmAdsMisc/OnChipMemories")
         if c_controls is None or a_controls is None or target_memories is None:
-            raise RuntimeError(f"Missing compiler settings for target {name}")
+            raise RuntimeError(f"Missing compiler or memory settings for target {name}")
 
         include_paths: list[Path] = []
         seen_include_paths: set[Path] = set()
