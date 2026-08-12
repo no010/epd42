@@ -79,7 +79,7 @@ async function epdWrite(cmd, data) {
   const interleavedCount = Math.max(0, Number(document.getElementById('interleavedcount').value) || 0);
   const count = Math.ceil(data.length / chunkSize);
   let chunkIdx = 0;
-  let noReplyCount = interleavedCount;
+  let noReplyCount = 0;
 
   if (!await write(EpdCmd.SEND_CMD, [cmd])) {
     return false;
