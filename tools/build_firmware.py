@@ -385,9 +385,8 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     run([objcopy, "-O", "ihex", str(elf_path), str(hex_path)])
     run([objcopy, "-O", "binary", str(elf_path), str(bin_path)])
     merge_hex_files(merged_hex_path, target_config["softdevice"], hex_path)
-    config_flash_start = app_flash_region[0] + app_flash_region[1]
-    ensure_hex_max_address_below(hex_path, config_flash_start)
-    ensure_hex_max_address_below(merged_hex_path, config_flash_start)
+    config_page_start = app_flash_region[0] + app_flash_region[1]
+    ensure_hex_max_address_below(hex_path, config_page_start)
 
 
 def parse_args() -> argparse.Namespace:

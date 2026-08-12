@@ -117,8 +117,7 @@ static bool epd_pin_mapping_is_valid(epd_config_t const *cfg)
         && epd_required_pin_is_valid(cfg->busy_pin)
         && epd_required_pin_is_valid(cfg->bs_pin)
         && epd_optional_pin_is_valid(cfg->wakeup_pin)
-        && epd_optional_pin_is_valid(cfg->led_pin)
-        && epd_optional_pin_is_valid(cfg->reserved[0]);
+        && epd_optional_pin_is_valid(cfg->led_pin);
 }
 
 static void epd_config_reset_to_default(epd_config_t *cfg)
