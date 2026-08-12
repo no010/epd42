@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -194,7 +195,19 @@ def merge_hex_files(output_path: Path, *input_paths: Path, prefer_last_start_lin
     write_hex_file(output_path, merged_data, start_linear_address)
 
 
-def read_target(name: str) -> tuple[list[Path], list[str], list[Path]]:
+def parse_memory_region(node: ET.Element | None, label: str, target_name: str) -> tuple[int, int]:
+    if node is None:
+        raise RuntimeError(f"Missing {label} memory settings for target {target_name}")
+
+    start_address = node.findtext("StartAddress")
+    size = node.findtext("Size")
+    if start_address is None or size is None:
+        raise RuntimeError(f"Incomplete {label} memory settings for target {target_name}")
+
+    return int(start_address, 0), int(size, 0)
+
+
+def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int, int], tuple[int, int]]:
     root = ET.parse(KEIL_PROJECT).getroot()
     for target in root.findall(".//Target"):
         if target.findtext("./TargetName") != name:
@@ -202,7 +215,8 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path]]:
 
         c_controls = target.find("./TargetOption/TargetArmAds/Cads/VariousControls")
         a_controls = target.find("./TargetOption/TargetArmAds/Aads/VariousControls")
-        if c_controls is None or a_controls is None:
+        target_memories = target.find("./TargetOption/TargetArmAds/ArmAdsMisc/OnChipMemories")
+        if c_controls is None or a_controls is None or target_memories is None:
             raise RuntimeError(f"Missing compiler settings for target {name}")
 
         include_paths: list[Path] = []
@@ -243,7 +257,10 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path]]:
                 seen_include_paths.add(path)
                 include_paths.append(path)
 
-        return sources, defines, include_paths
+        flash_region = parse_memory_region(target_memories.find("OCR_RVCT4"), "flash", name)
+        ram_region = parse_memory_region(target_memories.find("OCR_RVCT9"), "RAM", name)
+
+        return sources, defines, include_paths, flash_region, ram_region
 
     raise RuntimeError(f"Unknown target: {name}")
 
@@ -258,7 +275,7 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     obj_dir = target_dir / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
 
-    sources, defines, include_paths = read_target(name)
+    sources, defines, include_paths, flash_region, ram_region = read_target(name)
     sources.extend([target_config["system"], target_config["startup"]])
 
     include_args = [f"-I{path}" for path in include_paths]
@@ -295,6 +312,18 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     linker_script_path = target_dir / target_config["linker"].name
 
     linker_script_text = target_config["linker"].read_text()
+    linker_script_text = re.sub(
+        r"FLASH \(rx\) : ORIGIN = 0x[0-9a-fA-F]+, LENGTH = 0x[0-9a-fA-F]+",
+        f"FLASH (rx) : ORIGIN = 0x{flash_region[0]:x}, LENGTH = 0x{flash_region[1]:x}",
+        linker_script_text,
+        count=1,
+    )
+    linker_script_text = re.sub(
+        r"RAM \(rwx\) :  ORIGIN = 0x[0-9a-fA-F]+, LENGTH = 0x[0-9a-fA-F]+",
+        f"RAM (rwx) :  ORIGIN = 0x{ram_region[0]:x}, LENGTH = 0x{ram_region[1]:x}",
+        linker_script_text,
+        count=1,
+    )
     linker_script_text = linker_script_text.replace(
         'INCLUDE "nrf5x_common.ld"',
         f'INCLUDE "{(REPO_ROOT / "components" / "toolchain" / "gcc" / "nrf5x_common.ld").resolve()}"',
