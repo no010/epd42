@@ -1,0 +1,61 @@
+name: Build firmware
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/firmware.yml"
+      - "Keil/**"
+      - "EPD/**"
+      - "components/**"
+      - "config/**"
+      - "main.c"
+      - "tools/build_firmware.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/firmware.yml"
+      - "Keil/**"
+      - "EPD/**"
+      - "components/**"
+      - "config/**"
+      - "main.c"
+      - "tools/build_firmware.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: nRF51822_xxAB
+            artifact: epd42-bw
+          - target: nRF51802_xxAA
+            artifact: epd42-bwr
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ARM GCC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: Build firmware
+        run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            build/${{ matrix.target }}/*.elf
+            build/${{ matrix.target }}/*.hex
+            build/${{ matrix.target }}/*.bin
+            build/${{ matrix.target }}/*.map
