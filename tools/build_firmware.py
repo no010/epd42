@@ -46,6 +46,11 @@ COMMON_FLAGS = [
     "-Os",
 ]
 
+EXTRA_INCLUDE_PATHS = [
+    REPO_ROOT / "components" / "cmsis",
+    REPO_ROOT / "components" / "device",
+]
+
 
 def run(cmd: list[str]) -> None:
     print("+", " ".join(cmd))
@@ -100,6 +105,11 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path]]:
 
             sources.append(source_path)
 
+        for path in EXTRA_INCLUDE_PATHS:
+            if path not in seen_include_paths:
+                seen_include_paths.add(path)
+                include_paths.append(path)
+
         return sources, defines, include_paths
 
     raise RuntimeError(f"Unknown target: {name}")
@@ -148,15 +158,24 @@ def compile_target(name: str, tool_prefix: str, clean: bool) -> None:
     hex_path = artifact_base.with_suffix(".hex")
     bin_path = artifact_base.with_suffix(".bin")
     map_path = artifact_base.with_suffix(".map")
+    linker_script_path = target_dir / target_config["linker"].name
+
+    linker_script_text = target_config["linker"].read_text()
+    linker_script_text = linker_script_text.replace(
+        'INCLUDE "nrf5x_common.ld"',
+        f'INCLUDE "{(REPO_ROOT / "components" / "toolchain" / "gcc" / "nrf5x_common.ld").resolve()}"',
+    )
+    linker_script_path.write_text(linker_script_text)
 
     linker_flags = [
         "-mcpu=cortex-m0",
         "-mthumb",
         "-mabi=aapcs",
-        f"-T{target_config['linker']}",
+        f"-T{linker_script_path}",
         f"-Wl,-Map={map_path}",
         "-Wl,--gc-sections",
         "-Wl,--print-memory-usage",
+        "--specs=nano.specs",
         "--specs=nosys.specs",
     ]
 
