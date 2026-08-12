@@ -208,8 +208,9 @@ def parse_memory_region(node: ET.Element | None, label: str, target_name: str) -
 
 
 def rewrite_linker_memory_region(linker_script_text: str, region_name: str, attributes: str, start: int, size: int) -> str:
+    escaped_region_name = re.escape(region_name)
     region_pattern = (
-        rf"(?im)^\s*\b{region_name}\b\s*\([^)]*\)\s*:\s*"
+        rf"(?im)^\s*\b{escaped_region_name}\b\s*\([^)]*\)\s*:\s*"
         rf"ORIGIN\s*=\s*(?:0x)?[0-9a-fA-F]+,\s*LENGTH\s*=\s*(?:0x)?[0-9a-fA-F]+"
     )
     updated_text, replacements = re.subn(
