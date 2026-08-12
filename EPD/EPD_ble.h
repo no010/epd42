@@ -39,7 +39,7 @@ typedef struct
     uint8_t led_pin;
     
     uint8_t reserved[6];
-} epd_config_t;
+} __attribute__((packed)) epd_config_t;
 
 /**< EPD Service command IDs. */
 enum EPD_CMDS
