@@ -324,6 +324,16 @@ static void sys_evt_dispatch(uint32_t sys_evt)
 static void ble_stack_init(void)
 {
     uint32_t err_code;
+    ble_enable_params_t ble_enable_params;
+
+#ifdef S110
+    // S110 (SDK10 API): clock source is an enum value, not a struct pointer.
+    SOFTDEVICE_HANDLER_INIT(NRF_CLOCK_LFCLKSRC_SYNTH_250_PPM, NULL);
+
+    memset(&ble_enable_params, 0, sizeof(ble_enable_params));
+    err_code = sd_ble_enable(&ble_enable_params);
+    APP_ERROR_CHECK(err_code);
+#else
     nrf_clock_lf_cfg_t  clock_lf_cfg = {
         .source        = NRF_CLOCK_LF_SRC_SYNTH,
         .rc_ctiv       = 0,
@@ -334,7 +344,6 @@ static void ble_stack_init(void)
     // Initialize the SoftDevice handler module.
     SOFTDEVICE_HANDLER_INIT(&clock_lf_cfg, NULL);
 
-    ble_enable_params_t ble_enable_params;
     err_code = softdevice_enable_get_default_config(CENTRAL_LINK_COUNT,
                                                     PERIPHERAL_LINK_COUNT,
                                                     &ble_enable_params);
@@ -342,10 +351,11 @@ static void ble_stack_init(void)
 
     // Check the ram settings against the used number of links
     CHECK_RAM_START_ADDR(CENTRAL_LINK_COUNT,PERIPHERAL_LINK_COUNT);
-    
+
     // Enable BLE stack.
     err_code = softdevice_enable(&ble_enable_params);
     APP_ERROR_CHECK(err_code);
+#endif
 
     // Subscribe for BLE events.
     err_code = softdevice_ble_evt_handler_set(ble_evt_dispatch);
@@ -356,7 +366,8 @@ static void ble_stack_init(void)
     APP_ERROR_CHECK(err_code);
 }
 
-// Set BW Config to HIGH.
+#ifndef S110
+// Set BW Config to HIGH (S130 only).
 static void ble_options_set(void)
 {
     uint32_t err_code;
@@ -370,6 +381,7 @@ static void ble_options_set(void)
     err_code = sd_ble_opt_set(BLE_COMMON_OPT_CONN_BW, &ble_opt);
     APP_ERROR_CHECK(err_code);
 }
+#endif
 
 /**@brief Function for initializing the Advertising functionality.
  */
@@ -420,7 +432,9 @@ int main(void)
 
     timers_init();
     ble_stack_init();
+#ifndef S110
     ble_options_set();
+#endif
     gap_params_init();
     services_init();
     advertising_init();

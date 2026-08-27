@@ -22,8 +22,16 @@ TARGET_CONFIG = {
         "artifact_name": "epd42-bw",
         "startup": REPO_ROOT / "components" / "toolchain" / "gcc" / "gcc_startup_nrf51.s",
         "system": REPO_ROOT / "components" / "toolchain" / "system_nrf51.c",
-        "linker": REPO_ROOT / "components" / "softdevice" / "s130" / "toolchain" / "armgcc" / "armgcc_s130_nrf51822_xxab.ld",
-        "softdevice": REPO_ROOT / "components" / "softdevice" / "s130" / "hex" / "s130_nrf51_2.0.1_softdevice.hex",
+        "linker": REPO_ROOT / "components" / "softdevice" / "s110" / "toolchain" / "armgcc" / "armgcc_s110_nrf51822_xxab.ld",
+        "softdevice": REPO_ROOT / "components" / "softdevice" / "s110" / "hex" / "s110_nrf51_8.0.0_softdevice.hex",
+        "source_replacements": {
+            "components/softdevice/common/softdevice_handler/softdevice_handler.c": REPO_ROOT / "components_sdk10" / "softdevice" / "softdevice_handler" / "softdevice_handler.c",
+            "components/ble/ble_advertising/ble_advertising.c": REPO_ROOT / "components_sdk10" / "ble" / "ble_advertising" / "ble_advertising.c",
+            "components/ble/common/ble_conn_params.c": REPO_ROOT / "components_sdk10" / "ble" / "ble_conn_params" / "ble_conn_params.c",
+            "components/ble/common/ble_advdata.c": REPO_ROOT / "components_sdk10" / "ble" / "common" / "ble_advdata.c",
+            "components/ble/common/ble_srv_common.c": REPO_ROOT / "components_sdk10" / "ble" / "common" / "ble_srv_common.c",
+            "components/libraries/util/app_util_platform.c": REPO_ROOT / "components_sdk10" / "libraries" / "util" / "app_util_platform.c",
+        },
     },
     "nRF51802_xxAA": {
         "artifact_name": "epd42-bwr",
@@ -31,6 +39,7 @@ TARGET_CONFIG = {
         "system": REPO_ROOT / "components" / "toolchain" / "system_nrf51.c",
         "linker": REPO_ROOT / "components" / "softdevice" / "s130" / "toolchain" / "armgcc" / "armgcc_s130_nrf51822_xxaa.ld",
         "softdevice": REPO_ROOT / "components" / "softdevice" / "s130" / "hex" / "s130_nrf51_2.0.1_softdevice.hex",
+        "source_replacements": {},
     },
 }
 
@@ -282,6 +291,11 @@ def read_target(name: str) -> tuple[list[Path], list[str], list[Path], tuple[int
             replacement = SOURCE_REPLACEMENTS.get(str(source_path.relative_to(REPO_ROOT)).replace("\\", "/"))
             if replacement is not None:
                 source_path = replacement
+            else:
+                per_target = TARGET_CONFIG.get(name, {}).get("source_replacements", {})
+                replacement = per_target.get(str(source_path.relative_to(REPO_ROOT)).replace("\\", "/"))
+                if replacement is not None:
+                    source_path = replacement
 
             sources.append(source_path)
 

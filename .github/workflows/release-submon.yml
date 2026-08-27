@@ -16,12 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # nRF51822_xxAB (128 KB) is NOT supported: the subscription monitor
-          # feature (font + renderer + subscription code) requires ~22 KB of
-          # application Flash, which exceeds the 20 KB app budget on the 128 KB
-          # part.  Only nRF51802_xxAA (256 KB, ~147 KB app budget) is targeted.
+          - target: nRF51822_xxAB
+            artifact: epd42-submon-bw
           - target: nRF51802_xxAA
-            artifact: epd42-submon
+            artifact: epd42-submon-bwr
 
     steps:
       - name: Checkout
@@ -71,16 +69,16 @@ jobs:
             Firmware for periodic subscription usage display (Copilot coding plan,
             token plan, etc.) on the 4.2-inch e-ink display.
 
-            **Supported hardware**: nRF51802_xxAA (256 KB Flash).
-            nRF51822_xxAB (128 KB) is not supported — the font + renderer code
-            exceeds the 20 KB application Flash budget on that part.
-
             ### Files
-            - `epd42-submon.hex` — nRF51802_xxAA (supports BW and BWR displays)
+            - `epd42-submon-bw.hex` — nRF51822_xxAB (128 KB, S110, BW display)
+            - `epd42-submon-bwr.hex` — nRF51802_xxAA (256 KB, S130, BW or BWR display)
 
             ### Usage
-            Flash with `nrfjprog` or merge with SoftDevice S130 before flashing.
+            Flash with `nrfjprog` or merge with the appropriate SoftDevice before flashing:
+            - nRF51822_xxAB: S110 v8 (`s110_nrf51_8.0.0_softdevice.hex`)
+            - nRF51802_xxAA: S130 v2 (`s130_nrf51_2.0.1_softdevice.hex`)
           files: |
-            dist/epd42-submon/*.hex
+            dist/epd42-submon-bw/*.hex
+            dist/epd42-submon-bwr/*.hex
           draft: false
           prerelease: false
