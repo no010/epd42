@@ -1,0 +1,75 @@
+# EPD Monitor — example configuration
+# Copy this file to config.toml and fill in your API keys.
+
+# ── Device settings ─────────────────────────────────────────────────────────
+# BLE advertisement name used by the EPD42 firmware (see main.c DEVICE_NAME)
+device_name = "EPD42"
+
+# Optional: fixed BLE address / UUID (skips scanning, faster connection)
+# macOS uses UUIDs like "12345678-1234-1234-1234-1234567890AB"
+# Linux/Windows use MAC addresses like "AA:BB:CC:DD:EE:FF"
+device_address = ""
+
+# How often (seconds) the device should auto-refresh after disconnect
+# This is stored on the device and governs RTC-wakeup sleep cycles
+refresh_interval = 1800   # 30 minutes
+
+# Send TRIGGER_REFRESH immediately after pushing data
+trigger_refresh = true
+
+# BLE scan timeout in seconds
+scan_timeout = 15
+
+# Log level: DEBUG, INFO, WARNING, ERROR
+log_level = "INFO"
+
+# ── Providers ───────────────────────────────────────────────────────────────
+# Up to 3 provider entries are displayed on screen (EPD has 3 item slots).
+# Comment out providers you don't use.
+
+# ─── Kimi / Moonshot AI ────────────────────────────────────────────────────
+[[providers]]
+type    = "kimi"
+name    = "Kimi"
+api_key = "sk-..."
+# Optional: switch to international endpoint
+# base_url = "https://api.moonshot.ai"
+
+# ─── DeepSeek ──────────────────────────────────────────────────────────────
+[[providers]]
+type    = "deepseek"
+name    = "DeepSeek"
+api_key = "sk-..."
+
+# ─── Zhipu AI (智谱AI) — Coding Plan / subscription accounts ───────────────
+[[providers]]
+type    = "zhipu"
+name    = "Zhipu"
+api_key = "..."        # API key from open.bigmodel.cn
+# Optional: international endpoint
+# base_url = "https://api.z.ai"
+
+# ─── OpenAI / ChatGPT ──────────────────────────────────────────────────────
+# Requires an Admin API key (sk-admin-...) with api.usage.read scope.
+# Create one at: platform.openai.com/settings/organization/api-keys
+[[providers]]
+type                = "openai"
+name                = "ChatGPT"
+api_key             = "sk-admin-..."
+monthly_budget_usd  = 20.0    # Optional: used for progress bar on EPD
+
+# ─── Generic / custom provider ─────────────────────────────────────────────
+# Use this template for any provider with a simple GET balance endpoint.
+#
+# [[providers]]
+# type              = "generic"
+# name              = "Claude"
+# url               = "https://api.anthropic.com/v1/credits"
+# auth_header       = "x-api-key"
+# auth_prefix       = ""          # set to "" to send raw key without "Bearer"
+# api_key           = "sk-ant-..."
+# balance_field     = "credits_remaining"   # dotted path into JSON response
+# balance_scale     = 100                   # multiply to get integer cents
+# quota_total_field = ""
+# quota_used_field  = ""
+# unit              = "USD"

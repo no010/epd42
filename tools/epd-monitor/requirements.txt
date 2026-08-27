@@ -1,0 +1,6 @@
+# Core BLE + HTTP
+bleak>=0.22.0          # Cross-platform BLE (macOS / Linux / Windows)
+httpx>=0.27.0          # Async HTTP client
+
+# TOML support for Python < 3.11
+tomli>=2.0.0; python_version < "3.11"
