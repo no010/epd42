@@ -423,6 +423,21 @@
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_ble.c</FilePath>
             </File>
+            <File>
+              <FileName>subscription.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\subscription.c</FilePath>
+            </File>
+            <File>
+              <FileName>font8x16.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font8x16.c</FilePath>
+            </File>
+            <File>
+              <FileName>renderer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\renderer.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -1038,6 +1053,21 @@
               <FileName>EPD_ble.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_ble.c</FilePath>
+            </File>
+            <File>
+              <FileName>subscription.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\subscription.c</FilePath>
+            </File>
+            <File>
+              <FileName>font8x16.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font8x16.c</FilePath>
+            </File>
+            <File>
+              <FileName>renderer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\renderer.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -1655,6 +1685,21 @@
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_ble.c</FilePath>
             </File>
+            <File>
+              <FileName>subscription.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\subscription.c</FilePath>
+            </File>
+            <File>
+              <FileName>font8x16.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font8x16.c</FilePath>
+            </File>
+            <File>
+              <FileName>renderer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\renderer.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -2270,6 +2315,21 @@
               <FileName>EPD_ble.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\EPD\EPD_ble.c</FilePath>
+            </File>
+            <File>
+              <FileName>subscription.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\subscription.c</FilePath>
+            </File>
+            <File>
+              <FileName>font8x16.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\font8x16.c</FilePath>
+            </File>
+            <File>
+              <FileName>renderer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\EPD\renderer.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -25,6 +25,9 @@
 #include "app_error.h"
 #include "app_timer.h"
 #include "EPD_ble.h"
+#include "subscription.h"
+#include "renderer.h"
+#include "DEV_Config.h"
 #define NRF_LOG_MODULE_NAME "main"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
@@ -424,6 +427,46 @@ int main(void)
     conn_params_init();
 
     NRF_LOG_DEBUG("start..\n");
+
+    /* --- Subscription Monitor boot logic ---
+     * If valid subscription data is in Flash, render it immediately and then
+     * enter system_off with RTC wakeup for periodic refresh.
+     * Otherwise fall through to BLE advertising to await configuration. */
+    {
+        static subscription_data_t sub_data; /* static to avoid large stack frame */
+        subscription_load(&sub_data);
+
+        if (sub_data.valid_marker == SUBSCRIPTION_VALID_MARKER
+            && subscription_checksum(&sub_data) == sub_data.checksum
+            && sub_data.item_count > 0)
+        {
+            NRF_LOG_INFO("Subscription data valid — rendering display.\n");
+
+            renderer_set_data(&sub_data);
+            DEV_Module_Init();
+
+            if (m_epd.driver != NULL && m_epd.driver->display_stream != NULL)
+            {
+                m_epd.driver->init();
+                m_epd.driver->display_stream(subscription_scanline_cb);
+                m_epd.driver->sleep();
+            }
+
+            DEV_Module_Exit();
+
+            if (sub_data.refresh_interval_sec > 0)
+            {
+                NRF_LOG_INFO("Entering system_off, wakeup in %u s.\n",
+                             sub_data.refresh_interval_sec);
+                /* Prepare wakeup and enter system-off; RTC/NFC wakeup causes reset. */
+                ble_epd_sleep_prepare(&m_epd);
+                sd_power_system_off();
+                /* Not reached */
+            }
+            /* refresh_interval_sec == 0 means "stay in BLE mode" — fall through */
+        }
+    }
+
     err_code = ble_advertising_start(BLE_ADV_MODE_FAST);
     APP_ERROR_CHECK(err_code);
 

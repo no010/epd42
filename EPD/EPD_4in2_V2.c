@@ -220,3 +220,33 @@ void EPD_4IN2_V2_Sleep(void)
     EPD_4IN2_V2_SendData(0x01);
 	DEV_Delay_ms(200);
 }
+
+/******************************************************************************
+function :	Stream display — renders via scanline callback, zero frame buffer
+parameter:
+    callback : Called for each row (0..EPD_4IN2_V2_HEIGHT-1); fills 50-byte line.
+******************************************************************************/
+void EPD_4IN2_V2_DisplayStream(epd_scanline_callback_t callback)
+{
+    UWORD Width = (EPD_4IN2_V2_WIDTH % 8 == 0) ? (EPD_4IN2_V2_WIDTH / 8) : (EPD_4IN2_V2_WIDTH / 8 + 1);
+    UWORD Height = EPD_4IN2_V2_HEIGHT;
+    uint8_t line[Width]; /* stack: 50 bytes */
+
+    EPD_4IN2_V2_SendCommand(0x24);
+    for (UWORD j = 0; j < Height; j++) {
+        for (UWORD i = 0; i < Width; i++) line[i] = 0;
+        if (callback) callback(j, line);
+        for (UWORD i = 0; i < Width; i++) {
+            EPD_4IN2_V2_SendData(line[i]);
+        }
+    }
+
+    EPD_4IN2_V2_SendCommand(0x26);
+    for (UWORD j = 0; j < Height; j++) {
+        for (UWORD i = 0; i < Width; i++) {
+            EPD_4IN2_V2_SendData(0x00);
+        }
+    }
+
+    EPD_4IN2_V2_TurnOnDisplay();
+}

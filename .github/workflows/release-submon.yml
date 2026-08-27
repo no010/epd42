@@ -1,0 +1,86 @@
+name: Release subscription monitor firmware
+
+on:
+  push:
+    tags:
+      - "v*-submon*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # nRF51822_xxAB (128 KB) is NOT supported: the subscription monitor
+          # feature (font + renderer + subscription code) requires ~22 KB of
+          # application Flash, which exceeds the 20 KB app budget on the 128 KB
+          # part.  Only nRF51802_xxAA (256 KB, ~147 KB app budget) is targeted.
+          - target: nRF51802_xxAA
+            artifact: epd42-submon
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ARM GCC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: Build firmware
+        run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
+
+      - name: Rename artifacts
+        run: |
+          mkdir -p dist
+          for f in build/${{ matrix.target }}/*.hex; do
+            base=$(basename "$f" .hex)
+            cp "$f" "dist/${{ matrix.artifact }}.hex"
+          done
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Subscription Monitor ${{ github.ref_name }}"
+          body: |
+            ## EPD42 Subscription Monitor Firmware
+
+            Firmware for periodic subscription usage display (Copilot coding plan,
+            token plan, etc.) on the 4.2-inch e-ink display.
+
+            **Supported hardware**: nRF51802_xxAA (256 KB Flash).
+            nRF51822_xxAB (128 KB) is not supported — the font + renderer code
+            exceeds the 20 KB application Flash budget on that part.
+
+            ### Files
+            - `epd42-submon.hex` — nRF51802_xxAA (supports BW and BWR displays)
+
+            ### Usage
+            Flash with `nrfjprog` or merge with SoftDevice S130 before flashing.
+          files: |
+            dist/epd42-submon/*.hex
+          draft: false
+          prerelease: false

@@ -21,6 +21,8 @@
 #include "EPD_4in2_V2.h"
 #include "EPD_4in2b_V2.h"
 #include "EPD_ble.h"
+#include "subscription.h"
+#include "renderer.h"
 #define NRF_LOG_MODULE_NAME "EPD_ble"
 #include "nrf_log.h"
 
@@ -44,15 +46,18 @@ STATIC_ASSERT(EPD_PROTOCOL_CONFIG_SIZE <= EPD_CONFIG_SIZE);
 
 /** EPD drivers */
 static epd_driver_t epd_drivers[] = {
-    {EPD_DRIVER_4IN2, EPD_4IN2_Init, EPD_4IN2_Clear, 
+    {EPD_DRIVER_4IN2, EPD_4IN2_Init, EPD_4IN2_Clear,
      EPD_4IN2_SendCommand, EPD_4IN2_SendData,
-     EPD_4IN2_TurnOnDisplay, EPD_4IN2_Sleep},
+     EPD_4IN2_TurnOnDisplay, EPD_4IN2_Sleep,
+     EPD_4IN2_DisplayStream},
     {EPD_DRIVER_4IN2_V2, EPD_4IN2_V2_Init, EPD_4IN2_V2_Clear,
      EPD_4IN2_V2_SendCommand, EPD_4IN2_V2_SendData,
-     EPD_4IN2_V2_TurnOnDisplay, EPD_4IN2_V2_Sleep},
+     EPD_4IN2_V2_TurnOnDisplay, EPD_4IN2_V2_Sleep,
+     EPD_4IN2_V2_DisplayStream},
     {EPD_DRIVER_4IN2B_V2, EPD_4IN2B_V2_Init, EPD_4IN2B_V2_Clear,
      EPD_4IN2B_V2_SendCommand, EPD_4IN2B_V2_SendData,
-     EPD_4IN2B_V2_TurnOnDisplay, EPD_4IN2B_V2_Sleep},
+     EPD_4IN2B_V2_TurnOnDisplay, EPD_4IN2B_V2_Sleep,
+     EPD_4IN2B_V2_DisplayStream},
 };
 
 static epd_driver_t *epd_driver_get(uint8_t id)
@@ -304,6 +309,76 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
       case EPD_CMD_CFG_ERASE:
           epd_config_clear(&p_epd->config);
           NVIC_SystemReset();
+          break;
+
+      case EPD_CMD_SET_SUBSCRIPTION_DATA:
+          {
+              uint8_t resp[2] = { EPD_CMD_SET_SUBSCRIPTION_DATA, 0x01 }; /* default: error */
+              if (length >= (uint16_t)(1 + sizeof(subscription_data_t)))
+              {
+                  subscription_data_t sub;
+                  memcpy(&sub, &p_data[1], sizeof(subscription_data_t));
+                  /* Recompute checksum to prevent corrupted data */
+                  sub.checksum = subscription_checksum(&sub);
+                  err_code = subscription_save(&sub);
+                  if (err_code == NRF_SUCCESS)
+                  {
+                      resp[1] = 0x00; /* success */
+                  }
+              }
+              ble_epd_string_send(p_epd, resp, sizeof(resp));
+          }
+          break;
+
+      case EPD_CMD_SET_REFRESH_INTERVAL:
+          if (length >= 5)
+          {
+              subscription_data_t sub;
+              subscription_load(&sub);
+              if (sub.valid_marker == SUBSCRIPTION_VALID_MARKER)
+              {
+                  uint32_t interval;
+                  memcpy(&interval, &p_data[1], sizeof(uint32_t));
+                  sub.refresh_interval_sec = interval;
+                  sub.checksum = subscription_checksum(&sub);
+                  subscription_save(&sub);
+              }
+          }
+          break;
+
+      case EPD_CMD_TRIGGER_REFRESH:
+          {
+              subscription_data_t sub;
+              subscription_load(&sub);
+              if (sub.valid_marker == SUBSCRIPTION_VALID_MARKER)
+              {
+                  renderer_set_data(&sub);
+                  p_epd->driver->init();
+                  if (p_epd->driver->display_stream)
+                  {
+                      p_epd->driver->display_stream(subscription_scanline_cb);
+                  }
+                  p_epd->driver->sleep();
+              }
+          }
+          break;
+
+      case EPD_CMD_GET_SUBSCRIPTION_DATA:
+          {
+              subscription_data_t sub;
+              subscription_load(&sub);
+              /* Send in chunks of BLE_EPD_MAX_DATA_LEN */
+              const uint8_t *raw = (const uint8_t *)&sub;
+              uint16_t remaining = (uint16_t)sizeof(subscription_data_t);
+              uint16_t offset = 0;
+              while (remaining > 0)
+              {
+                  uint16_t chunk = (remaining > BLE_EPD_MAX_DATA_LEN) ? BLE_EPD_MAX_DATA_LEN : remaining;
+                  ble_epd_string_send(p_epd, (uint8_t *)(raw + offset), chunk);
+                  offset += chunk;
+                  remaining -= chunk;
+              }
+          }
           break;
 
       default:

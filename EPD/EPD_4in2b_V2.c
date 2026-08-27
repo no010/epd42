@@ -176,3 +176,36 @@ void EPD_4IN2B_V2_Sleep(void)
     EPD_4IN2B_V2_SendCommand(0X07);  	//deep sleep
     EPD_4IN2B_V2_SendData(0xA5);
 }
+
+/******************************************************************************
+function :	Stream display (black channel only) — renders via scanline callback
+parameter:
+    callback : Called for each row (0..EPD_4IN2B_V2_HEIGHT-1); fills 50-byte line.
+               Red channel is left blank (all 0x00).
+******************************************************************************/
+void EPD_4IN2B_V2_DisplayStream(epd_scanline_callback_t callback)
+{
+    UWORD Width = (EPD_4IN2B_V2_WIDTH % 8 == 0) ? (EPD_4IN2B_V2_WIDTH / 8) : (EPD_4IN2B_V2_WIDTH / 8 + 1);
+    UWORD Height = EPD_4IN2B_V2_HEIGHT;
+    uint8_t line[Width]; /* stack: 50 bytes */
+
+    /* Black channel */
+    EPD_4IN2B_V2_SendCommand(0x10);
+    for (UWORD j = 0; j < Height; j++) {
+        for (UWORD i = 0; i < Width; i++) line[i] = 0;
+        if (callback) callback(j, line);
+        for (UWORD i = 0; i < Width; i++) {
+            EPD_4IN2B_V2_SendData(line[i]);
+        }
+    }
+
+    /* Red channel — blank */
+    EPD_4IN2B_V2_SendCommand(0x13);
+    for (UWORD j = 0; j < Height; j++) {
+        for (UWORD i = 0; i < Width; i++) {
+            EPD_4IN2B_V2_SendData(0x00);
+        }
+    }
+
+    EPD_4IN2B_V2_TurnOnDisplay();
+}

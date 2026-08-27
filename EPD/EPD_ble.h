@@ -56,6 +56,11 @@ enum EPD_CMDS
     EPD_CMD_SYS_RESET  = 0x91,                        /**< MCU reset */
     EPD_CMD_SYS_SLEEP  = 0x92,                        /**< MCU enter sleep mode */
     EPD_CMD_CFG_ERASE  = 0x99,                        /**< Erase config and reset */
+
+    EPD_CMD_SET_SUBSCRIPTION_DATA = 0xA0,             /**< Write subscription_data_t to Flash */
+    EPD_CMD_SET_REFRESH_INTERVAL  = 0xA1,             /**< Set refresh interval (uint32_t seconds) */
+    EPD_CMD_TRIGGER_REFRESH       = 0xA2,             /**< Immediately refresh the display */
+    EPD_CMD_GET_SUBSCRIPTION_DATA = 0xA3,             /**< Notify current subscription_data_t */
 };
 
 /**< EPD driver IDs. */
@@ -87,6 +92,7 @@ typedef struct
     void (*send_data)(UBYTE Data);                    /**< send data */
     void (*display)(void);                            /**< Sends the image buffer in RAM to e-Paper and displays */
     void (*sleep)(void);                              /**< Enter sleep mode */
+    void (*display_stream)(void (*cb)(uint16_t, uint8_t *)); /**< Stream display via scanline callback */
 } epd_driver_t;
 
 /**@brief EPD Service structure.

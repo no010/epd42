@@ -46,4 +46,18 @@ void EPD_4IN2_SendCommand(UBYTE Reg);
 void EPD_4IN2_SendData(UBYTE Data);
 void EPD_4IN2_TurnOnDisplay(void);
 
+/**
+ * @brief Stream-display: render the screen via a per-row callback.
+ *
+ * No full frame buffer is allocated; the driver calls @p callback once
+ * per row (0..EPD_4IN2_HEIGHT-1) supplying a 50-byte (400/8) output
+ * buffer.  The callback fills the buffer with the pixel data for that row
+ * (1 = black, 0 = white, MSB = leftmost pixel) and the driver sends it
+ * immediately over SPI.
+ *
+ * @param callback  Function called for each scanline.
+ */
+typedef void (*epd_scanline_callback_t)(uint16_t row, uint8_t *line_buffer);
+void EPD_4IN2_DisplayStream(epd_scanline_callback_t callback);
+
 #endif

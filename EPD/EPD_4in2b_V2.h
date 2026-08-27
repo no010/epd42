@@ -45,4 +45,7 @@ void EPD_4IN2B_V2_SendCommand(UBYTE Reg);
 void EPD_4IN2B_V2_SendData(UBYTE Data);
 void EPD_4IN2B_V2_TurnOnDisplay(void);
 
+typedef void (*epd_scanline_callback_t)(uint16_t row, uint8_t *line_buffer);
+void EPD_4IN2B_V2_DisplayStream(epd_scanline_callback_t callback);
+
 #endif
