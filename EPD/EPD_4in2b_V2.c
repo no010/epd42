@@ -189,21 +189,22 @@ void EPD_4IN2B_V2_DisplayStream(epd_scanline_callback_t callback)
     UWORD Height = EPD_4IN2B_V2_HEIGHT;
     uint8_t line[Width]; /* stack: 50 bytes */
 
-    /* Black channel */
+    /* Black channel — invert renderer output (renderer: 0=white, 1=black;
+     * hardware: 0xFF=white, 0x00=black) */
     EPD_4IN2B_V2_SendCommand(0x10);
     for (UWORD j = 0; j < Height; j++) {
         for (UWORD i = 0; i < Width; i++) line[i] = 0;
         if (callback) callback(j, line);
         for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2B_V2_SendData(line[i]);
+            EPD_4IN2B_V2_SendData(~line[i]);
         }
     }
 
-    /* Red channel — blank */
+    /* Red channel — blank (0xFF = no red) */
     EPD_4IN2B_V2_SendCommand(0x13);
     for (UWORD j = 0; j < Height; j++) {
         for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2B_V2_SendData(0x00);
+            EPD_4IN2B_V2_SendData(0xFF);
         }
     }
 

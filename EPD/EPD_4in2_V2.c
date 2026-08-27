@@ -236,15 +236,16 @@ void EPD_4IN2_V2_DisplayStream(epd_scanline_callback_t callback)
     for (UWORD j = 0; j < Height; j++) {
         for (UWORD i = 0; i < Width; i++) line[i] = 0;
         if (callback) callback(j, line);
+        /* Invert: renderer bit=1=black, hardware 0xFF=white / 0x00=black */
         for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2_V2_SendData(line[i]);
+            EPD_4IN2_V2_SendData(~line[i]);
         }
     }
 
     EPD_4IN2_V2_SendCommand(0x26);
     for (UWORD j = 0; j < Height; j++) {
         for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2_V2_SendData(0x00);
+            EPD_4IN2_V2_SendData(0xFF);  /* second frame: all-white */
         }
     }
 

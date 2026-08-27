@@ -208,13 +208,14 @@ void EPD_4IN2_DisplayStream(epd_scanline_callback_t callback)
         }
     }
 
-    /* Send new-data frame via callback */
+    /* Send new-data frame via callback; invert bytes (renderer: 0=white, 1=black;
+     * hardware: 0xFF=white, 0x00=black) */
     EPD_4IN2_SendCommand(0x13);
     for (UWORD j = 0; j < Height; j++) {
         for (UWORD i = 0; i < Width; i++) line[i] = 0;
         if (callback) callback(j, line);
         for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2_SendData(line[i]);
+            EPD_4IN2_SendData(~line[i]);
         }
     }
 
