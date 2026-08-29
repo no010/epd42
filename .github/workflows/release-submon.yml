@@ -66,8 +66,11 @@ jobs:
           body: |
             ## EPD42 Subscription Monitor Firmware
 
-            Firmware for periodic subscription usage display (Copilot coding plan,
-            token plan, etc.) on the 4.2-inch e-ink display.
+            Firmware for the subscription usage display on the 4.2-inch e-ink
+            panel. The firmware keeps no font and no framebuffer: the PC
+            companion (`tools/epd-monitor`) composes the 400x300 frame and
+            streams it as packed bits, and the device stays advertising so a
+            push can happen at any time.
 
             ### Files
             - `epd42-submon-bw.hex` — nRF51822_xxAB (128 KB, S110, BW display)

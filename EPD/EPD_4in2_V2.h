@@ -49,7 +49,21 @@ void EPD_4IN2_V2_SendCommand(UBYTE Reg);
 void EPD_4IN2_V2_SendData(UBYTE Data);
 void EPD_4IN2_V2_TurnOnDisplay(void);
 
-typedef void (*epd_scanline_callback_t)(uint16_t row, uint8_t *line_buffer);
-void EPD_4IN2_V2_DisplayStream(epd_scanline_callback_t callback);
+/**
+ * Host-fed streaming, one packed plane at a time: plane 0 is RAM command
+ * 0x24, plane 1 is 0x26.  Bytes are forwarded verbatim, so the host packs
+ * the panel's own polarity (1 = white, MSB = leftmost).
+ *
+ * StreamBegin() re-arms the RAM window and address counters, which the
+ * controller needs because they end up at the far corner after a full
+ * plane.  Init() must have run before the first StreamBegin() of a frame.
+ */
+#define EPD_4IN2_V2_PLANES        2
+#define EPD_4IN2_V2_PLANE_BYTES   ((EPD_4IN2_V2_WIDTH / 8) * EPD_4IN2_V2_HEIGHT)
+
+uint16_t EPD_4IN2_V2_StreamPlaneBytes(void);
+void EPD_4IN2_V2_StreamBegin(uint8_t plane);
+void EPD_4IN2_V2_StreamWrite(const uint8_t *buffer, uint16_t length);
+UBYTE EPD_4IN2_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms);
 
 #endif

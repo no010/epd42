@@ -57,10 +57,48 @@ enum EPD_CMDS
     EPD_CMD_SYS_SLEEP  = 0x92,                        /**< MCU enter sleep mode */
     EPD_CMD_CFG_ERASE  = 0x99,                        /**< Erase config and reset */
 
-    EPD_CMD_SET_SUBSCRIPTION_DATA = 0xA0,             /**< Write subscription_data_t to Flash */
-    EPD_CMD_SET_REFRESH_INTERVAL  = 0xA1,             /**< Set refresh interval (uint32_t seconds) */
-    EPD_CMD_TRIGGER_REFRESH       = 0xA2,             /**< Immediately refresh the display */
-    EPD_CMD_GET_SUBSCRIPTION_DATA = 0xA3,             /**< Notify current subscription_data_t */
+    /** Packed-bit image streaming.  The host composes the frame, so the
+     *  device never holds one: every byte of a plane is pushed straight into
+     *  the panel's RAM.  Wire polarity is the panel's own (1 = white).
+     *
+     *  EPD_CMD_STREAM_BEGIN  in : [cmd][plane]
+     *                      out : [cmd][status][plane][plane_bytes_le16]
+     *  EPD_CMD_STREAM_DATA   in : [cmd][pixel x 1..19]        (no response)
+     *  EPD_CMD_STREAM_END    in : [cmd][bytes_le16][sum_le32][flags]
+     *                      out : [cmd][status][received_le16][sum_le32]
+     *  EPD_CMD_STREAM_ABORT  in : [cmd]
+     *                      out : [cmd][status]
+     *  EPD_CMD_GET_STATUS    in : [cmd]
+     *                      out : [cmd][streaming][plane][received_le16]
+     *                           [plane_bytes_le16][driver]
+     *
+     *  STREAM_END flags: bit0 = refresh, bit1 = put the panel to sleep.
+     *  Status codes are EPD_STREAM_STATUS_*. */
+    EPD_CMD_STREAM_BEGIN      = 0xB0,                 /**< start a plane, device acks via notify */
+    EPD_CMD_STREAM_DATA       = 0xB1,                 /**< append packed pixels to the open plane */
+    EPD_CMD_STREAM_END        = 0xB2,                 /**< verify the plane, optionally refresh */
+    EPD_CMD_STREAM_ABORT      = 0xB3,                 /**< abandon the frame, leaving the panel as is */
+    EPD_CMD_GET_STATUS        = 0xB5,                 /**< report stream progress and active driver */
+};
+
+/**< Every supported panel takes a black plane and one extra plane (old data or red). */
+#define EPD_STREAM_PLANES               2
+
+/**< EPD_CMD_STREAM_END flags. */
+enum EPD_STREAM_FLAGS
+{
+    EPD_STREAM_FLAG_REFRESH = 0x01,                   /**< push RAM to the panel */
+    EPD_STREAM_FLAG_SLEEP   = 0x02,                   /**< power the panel down afterwards */
+};
+
+/** Packed-bit stream status codes, returned in the first byte after the command. */
+enum EPD_STREAM_STATUS
+{
+    EPD_STREAM_STATUS_OK             = 0x00,
+    EPD_STREAM_STATUS_BAD_COMMAND    = 0x01, /**< malformed request, or no plane open */
+    EPD_STREAM_STATUS_OVERRUN        = 0x02, /**< more bytes than the plane holds */
+    EPD_STREAM_STATUS_VERIFY_FAILED  = 0x03, /**< byte count or checksum mismatch */
+    EPD_STREAM_STATUS_BUSY_TIMEOUT   = 0x04, /**< panel never left busy */
 };
 
 /**< EPD driver IDs. */
@@ -92,8 +130,25 @@ typedef struct
     void (*send_data)(UBYTE Data);                    /**< send data */
     void (*display)(void);                            /**< Sends the image buffer in RAM to e-Paper and displays */
     void (*sleep)(void);                              /**< Enter sleep mode */
-    void (*display_stream)(void (*cb)(uint16_t, uint8_t *)); /**< Stream display via scanline callback */
+    void (*stream_begin)(uint8_t plane);              /**< Open a packed plane for streaming */
+    void (*stream_write)(const uint8_t *buffer, uint16_t length); /**< Forward packed bytes to the open plane */
+    uint16_t (*plane_bytes)(void);                    /**< Bytes in one packed plane */
+    uint8_t (*display_timeout)(uint32_t timeout_ms);  /**< Refresh; 0 = panel stayed busy */
 } epd_driver_t;
+
+/**@brief Packed-bit stream state, valid for one connection.
+ *
+ * @details The host composes the frame, so the device only needs to know how
+ *          far the current plane has got: it forwards bytes as they arrive and
+ *          verifies count plus running sum on EPD_CMD_STREAM_END.
+ */
+typedef struct
+{
+    uint8_t  plane;                                   /**< plane currently open, or 0xFF when idle  */
+    uint8_t  initialized;                             /**< panel Init() done for this frame          */
+    uint16_t received;                                /**< bytes forwarded into the open plane       */
+    uint32_t sum;                                     /**< running byte sum for verification         */
+} epd_stream_t;
 
 /**@brief EPD Service structure.
  *
@@ -108,6 +163,7 @@ typedef struct
     bool                     is_notification_enabled; /**< Variable to indicate if the peer has enabled notification of the RX characteristic.*/
     epd_driver_t             *driver;                 /**< current EPD driver */
     epd_config_t             config;                  /**< EPD config */
+    epd_stream_t             stream;                  /**< Packed-bit stream in progress */
 } ble_epd_t;
 
 /**@brief Function for preparing sleep mode.

@@ -25,8 +25,6 @@
 #include "app_error.h"
 #include "app_timer.h"
 #include "EPD_ble.h"
-#include "subscription.h"
-#include "renderer.h"
 #include "DEV_Config.h"
 #define NRF_LOG_MODULE_NAME "main"
 #include "nrf_log.h"
@@ -36,13 +34,17 @@
 #define PERIPHERAL_LINK_COUNT           1                                               /**< Number of peripheral links used by the application. When changing this number remember to adjust the RAM settings*/
 
 #define DEVICE_NAME                      "NRF_EPD"                                      /**< Name of device. Will be included in the advertising data. */
-#define APP_ADV_INTERVAL                 300                                            /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
-#define APP_ADV_TIMEOUT_IN_SECONDS       180                                            /**< The advertising timeout (in units of seconds). */
+#define APP_ADV_INTERVAL                 300                                            /**< The fast advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_TIMEOUT_IN_SECONDS       30                                             /**< How long to advertise fast before dropping to slow advertising (seconds). */
+#define APP_ADV_SLOW_INTERVAL            2048                                           /**< The slow advertising interval (in units of 0.625 ms. This value corresponds to 1.28 s). */
+#define APP_ADV_SLOW_TIMEOUT_IN_SECONDS  0                                              /**< Slow advertising never times out: the device must stay reachable for the host. */
 #define APP_TIMER_PRESCALER              0                                              /**< Value of the RTC1 PRESCALER register. */
 #define APP_TIMER_OP_QUEUE_SIZE          4                                              /**< Size of timer operation queues. */
 
+/* A full 400x300 packed plane is 15000 bytes, one 19-byte GATT write per connection
+ * event, so the interval decides whether a refresh takes 6 s or 24 s. */
 #define MIN_CONN_INTERVAL                MSEC_TO_UNITS(7.5, UNIT_1_25_MS)               /**< Minimum connection interval (7.5 ms) */
-#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(30, UNIT_1_25_MS)                /**< Maximum connection interval (30 ms). */
+#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(15, UNIT_1_25_MS)                /**< Maximum connection interval (15 ms). */
 #define SLAVE_LATENCY                    6                                              /**< Slave latency. */
 #define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(430, UNIT_10_MS)                 /**< Connection supervisory timeout (430 ms). */
 
@@ -396,7 +398,7 @@ static void advertising_init(void)
     memset(&advdata, 0, sizeof(advdata));
     advdata.name_type          = BLE_ADVDATA_FULL_NAME;
     advdata.include_appearance = false;
-    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
     
     memset(&scanrsp, 0, sizeof(scanrsp));
     scanrsp.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
@@ -406,6 +408,9 @@ static void advertising_init(void)
     options.ble_adv_fast_enabled  = true;
     options.ble_adv_fast_interval = APP_ADV_INTERVAL;
     options.ble_adv_fast_timeout  = APP_ADV_TIMEOUT_IN_SECONDS;
+    options.ble_adv_slow_enabled  = true;
+    options.ble_adv_slow_interval = APP_ADV_SLOW_INTERVAL;
+    options.ble_adv_slow_timeout  = APP_ADV_SLOW_TIMEOUT_IN_SECONDS;
 
     err_code = ble_advertising_init(&advdata, &scanrsp, &options, on_adv_evt, NULL);
     APP_ERROR_CHECK(err_code);
@@ -441,45 +446,6 @@ int main(void)
     conn_params_init();
 
     NRF_LOG_DEBUG("start..\n");
-
-    /* --- Subscription Monitor boot logic ---
-     * If valid subscription data is in Flash, render it immediately and then
-     * enter system_off with RTC wakeup for periodic refresh.
-     * Otherwise fall through to BLE advertising to await configuration. */
-    {
-        static subscription_data_t sub_data; /* static to avoid large stack frame */
-        subscription_load(&sub_data);
-
-        if (sub_data.valid_marker == SUBSCRIPTION_VALID_MARKER
-            && subscription_checksum(&sub_data) == sub_data.checksum
-            && sub_data.item_count > 0)
-        {
-            NRF_LOG_INFO("Subscription data valid — rendering display.\n");
-
-            renderer_set_data(&sub_data);
-            DEV_Module_Init();
-
-            if (m_epd.driver != NULL && m_epd.driver->display_stream != NULL)
-            {
-                m_epd.driver->init();
-                m_epd.driver->display_stream(subscription_scanline_cb);
-                m_epd.driver->sleep();
-            }
-
-            DEV_Module_Exit();
-
-            if (sub_data.refresh_interval_sec > 0)
-            {
-                NRF_LOG_INFO("Entering system_off, wakeup in %u s.\n",
-                             sub_data.refresh_interval_sec);
-                /* Prepare wakeup and enter system-off; RTC/NFC wakeup causes reset. */
-                ble_epd_sleep_prepare(&m_epd);
-                sd_power_system_off();
-                /* Not reached */
-            }
-            /* refresh_interval_sec == 0 means "stay in BLE mode" — fall through */
-        }
-    }
 
     err_code = ble_advertising_start(BLE_ADV_MODE_FAST);
     APP_ERROR_CHECK(err_code);

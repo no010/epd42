@@ -50,6 +50,8 @@ extern uint32_t EPD_BS_PIN;
 UBYTE DEV_Module_Init(void);
 void DEV_Module_Exit(void);
 
+UBYTE DEV_ReadBusyTimeout(UBYTE idle_level, UDOUBLE poll_ms, UDOUBLE timeout_ms);
+
 void DEV_SPI_WriteByte(UBYTE value);
 UBYTE DEV_SPI_ReadByte(void);
 

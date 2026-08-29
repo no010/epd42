@@ -61,6 +61,32 @@ UBYTE DEV_Module_Init(void)
     return 0;
 }
 
+/******************************************************************************
+function:	Wait until BUSY reaches idle_level, giving up after timeout_ms
+parameter:
+    idle_level : pin level that means "panel ready"
+    poll_ms    : delay between two samples
+    timeout_ms : maximum total wait
+Info:		Returns 1 when idle, 0 on timeout. The per-driver ReadBusy() loops are
+		unbounded, which wedges the SoftDevice event handler forever when BUSY
+		is unwired (it is configured NOPULL).
+******************************************************************************/
+UBYTE DEV_ReadBusyTimeout(UBYTE idle_level, UDOUBLE poll_ms, UDOUBLE timeout_ms)
+{
+    UDOUBLE waited = 0;
+
+    while (DEV_Digital_Read(EPD_BUSY_PIN) != idle_level)
+    {
+        if (waited >= timeout_ms)
+        {
+            return 0;
+        }
+        DEV_Delay_ms(poll_ms);
+        waited += poll_ms;
+    }
+    return 1;
+}
+
 /*********************************************
 function: Hardware interface
 note:

@@ -178,35 +178,49 @@ void EPD_4IN2B_V2_Sleep(void)
 }
 
 /******************************************************************************
-function :	Stream display (black channel only) — renders via scanline callback
+function :	Host-fed streaming, plane 0 = 0x10 (black), plane 1 = 0x13 (red)
 parameter:
-    callback : Called for each row (0..EPD_4IN2B_V2_HEIGHT-1); fills 50-byte line.
-               Red channel is left blank (all 0x00).
+Info:		Bytes are forwarded verbatim: the host packs the panel's own
+		polarity (1 = white).
 ******************************************************************************/
-void EPD_4IN2B_V2_DisplayStream(epd_scanline_callback_t callback)
+uint16_t EPD_4IN2B_V2_StreamPlaneBytes(void)
 {
-    UWORD Width = (EPD_4IN2B_V2_WIDTH % 8 == 0) ? (EPD_4IN2B_V2_WIDTH / 8) : (EPD_4IN2B_V2_WIDTH / 8 + 1);
-    UWORD Height = EPD_4IN2B_V2_HEIGHT;
-    uint8_t line[Width]; /* stack: 50 bytes */
+    return EPD_4IN2B_V2_PLANE_BYTES;
+}
 
-    /* Black channel — invert renderer output (renderer: 0=white, 1=black;
-     * hardware: 0xFF=white, 0x00=black) */
-    EPD_4IN2B_V2_SendCommand(0x10);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) line[i] = 0;
-        if (callback) callback(j, line);
-        for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2B_V2_SendData(~line[i]);
-        }
+void EPD_4IN2B_V2_StreamBegin(uint8_t plane)
+{
+    EPD_4IN2B_V2_SendCommand(plane == 0 ? 0x10 : 0x13);
+}
+
+void EPD_4IN2B_V2_StreamWrite(const uint8_t *buffer, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        EPD_4IN2B_V2_SendData(buffer[i]);
     }
+}
 
-    /* Red channel — blank (0xFF = no red) */
-    EPD_4IN2B_V2_SendCommand(0x13);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2B_V2_SendData(0xFF);
+UBYTE EPD_4IN2B_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms)
+{
+    UDOUBLE waited;
+
+    EPD_4IN2B_V2_SendCommand(0x12); // DISPLAY_REFRESH
+    DEV_Delay_ms(100);
+
+    /* Same protocol as EPD_4IN2B_V2_ReadBusy(): the controller only reports
+     * its status in response to 0x71, and HIGH means idle. */
+    waited = 100;
+    do {
+        EPD_4IN2B_V2_SendCommand(0x71);
+        DEV_Delay_ms(50);
+        waited += 50;
+        if (waited > timeout_ms)
+        {
+            return 0;
         }
-    }
+    } while (!(DEV_Digital_Read(EPD_BUSY_PIN)));
 
-    EPD_4IN2B_V2_TurnOnDisplay();
+    DEV_Delay_ms(50);
+    return 1;
 }

@@ -222,32 +222,36 @@ void EPD_4IN2_V2_Sleep(void)
 }
 
 /******************************************************************************
-function :	Stream display — renders via scanline callback, zero frame buffer
+function :	Host-fed streaming, plane 0 = 0x24, plane 1 = 0x26
 parameter:
-    callback : Called for each row (0..EPD_4IN2_V2_HEIGHT-1); fills 50-byte line.
+Info:		Bytes are forwarded verbatim: the host packs the panel's own
+		polarity (1 = white).  The window and address counters are re-armed
+		per plane because they sit at the far corner after a full pass.
 ******************************************************************************/
-void EPD_4IN2_V2_DisplayStream(epd_scanline_callback_t callback)
+uint16_t EPD_4IN2_V2_StreamPlaneBytes(void)
 {
-    UWORD Width = (EPD_4IN2_V2_WIDTH % 8 == 0) ? (EPD_4IN2_V2_WIDTH / 8) : (EPD_4IN2_V2_WIDTH / 8 + 1);
-    UWORD Height = EPD_4IN2_V2_HEIGHT;
-    uint8_t line[Width]; /* stack: 50 bytes */
+    return EPD_4IN2_V2_PLANE_BYTES;
+}
 
-    EPD_4IN2_V2_SendCommand(0x24);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) line[i] = 0;
-        if (callback) callback(j, line);
-        /* Invert: renderer bit=1=black, hardware 0xFF=white / 0x00=black */
-        for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2_V2_SendData(~line[i]);
-        }
+void EPD_4IN2_V2_StreamBegin(uint8_t plane)
+{
+    EPD_4IN2_V2_SetWindows(0, 0, EPD_4IN2_V2_WIDTH - 1, EPD_4IN2_V2_HEIGHT - 1);
+    EPD_4IN2_V2_SetCursor(0, 0);
+    EPD_4IN2_V2_SendCommand(plane == 0 ? 0x24 : 0x26);
+}
+
+void EPD_4IN2_V2_StreamWrite(const uint8_t *buffer, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        EPD_4IN2_V2_SendData(buffer[i]);
     }
+}
 
-    EPD_4IN2_V2_SendCommand(0x26);
-    for (UWORD j = 0; j < Height; j++) {
-        for (UWORD i = 0; i < Width; i++) {
-            EPD_4IN2_V2_SendData(0xFF);  /* second frame: all-white */
-        }
-    }
-
-    EPD_4IN2_V2_TurnOnDisplay();
+UBYTE EPD_4IN2_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms)
+{
+    EPD_4IN2_V2_SendCommand(0x22);
+    EPD_4IN2_V2_SendData(0xF7);
+    EPD_4IN2_V2_SendCommand(0x20);
+    return DEV_ReadBusyTimeout(0, 10, timeout_ms);
 }
