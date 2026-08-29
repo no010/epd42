@@ -1,21 +1,24 @@
 # EPD Monitor — example configuration
 # Copy this file to config.toml and fill in your API keys.
+#
+# The screen is composed here on the PC: providers are polled, the result is
+# drawn into a 400x300 monochrome frame, and the packed bits are streamed to
+# the panel. The device holds no font and no framebuffer.
 
 # ── Device settings ─────────────────────────────────────────────────────────
-# BLE advertisement name used by the EPD42 firmware (see main.c DEVICE_NAME)
-device_name = "EPD42"
+# BLE advertisement name: main.c builds "NRF_EPD_" + the last two MAC bytes.
+# Run `python epd_monitor.py scan` to see what is actually advertising.
+device_name = "NRF_EPD"
 
 # Optional: fixed BLE address / UUID (skips scanning, faster connection)
 # macOS uses UUIDs like "12345678-1234-1234-1234-1234567890AB"
 # Linux/Windows use MAC addresses like "AA:BB:CC:DD:EE:FF"
 device_address = ""
 
-# How often (seconds) the device should auto-refresh after disconnect
-# This is stored on the device and governs RTC-wakeup sleep cycles
+# How often (seconds) `daemon` fetches and pushes a new frame. Purely
+# host-side: the device stays advertising and cannot refresh itself, because an
+# nRF51 on the synthetic LF clock cannot wake from sleep on a timer.
 refresh_interval = 1800   # 30 minutes
-
-# Send TRIGGER_REFRESH immediately after pushing data
-trigger_refresh = true
 
 # BLE scan timeout in seconds
 scan_timeout = 15
@@ -23,7 +26,18 @@ scan_timeout = 15
 # Log level: DEBUG, INFO, WARNING, ERROR
 log_level = "INFO"
 
-# ── Providers ───────────────────────────────────────────────────────────────
+# ── Display ─────────────────────────────────────────────────────────────────
+# Heading drawn across the top of the frame.
+title = "SUB MONITOR"
+
+# TTF for the frame. Empty picks DejaVuSansMono, then Pillow's built-in font.
+font_path = ""
+
+# Stream with write-without-response: roughly 3x faster, but a dropped packet
+# is caught only by the end-of-plane checksum, which costs a whole retransmit.
+fast_write = false
+
+# ── Providers ──────────────────────────────────────────────────────────────
 # Up to 3 provider entries are displayed on screen (EPD has 3 item slots).
 # Comment out providers you don't use.
 

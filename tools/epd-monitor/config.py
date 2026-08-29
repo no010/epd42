@@ -25,13 +25,20 @@ else:
 
 # Defaults
 _DEFAULTS: dict[str, Any] = {
-    "device_name": "EPD42",
+    "device_name": "NRF_EPD",
     "device_address": "",
     "refresh_interval": 1800,
-    "trigger_refresh": True,
     "scan_timeout": 15,
     "log_level": "INFO",
+    "title": "SUB MONITOR",
+    "font_path": "",
+    "fast_write": False,
 }
+
+
+def defaults() -> dict[str, Any]:
+    """Settings to use when there is no config file (BLE-only commands)."""
+    return dict(_DEFAULTS)
 
 
 def load(path: str | Path) -> dict[str, Any]:

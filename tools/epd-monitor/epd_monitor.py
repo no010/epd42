@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""EPD Monitor — PC companion for the EPD42 subscription display.
+"""EPD Monitor — PC companion for the EPD42 display.
+
+The screen is composed here, not on the device: providers are polled, the
+result is drawn into a 400x300 monochrome frame, and the packed bits are
+streamed to the panel over BLE.
 
 Usage:
-    python epd_monitor.py push              # fetch + push once
-    python epd_monitor.py status            # print current values, no BLE
+    python epd_monitor.py push              # fetch + stream once
     python epd_monitor.py daemon            # loop forever, push on interval
+    python epd_monitor.py render            # write frame.bin / preview.png only
+    python epd_monitor.py status            # print current values, no BLE
     python epd_monitor.py scan              # scan for nearby BLE devices
+    python epd_monitor.py describe          # dump the device's GATT services
 
 Common options:
     --config PATH     Config file (default: config.toml)
-    --no-ble          Fetch data but skip BLE push (dry-run)
+    --no-ble          Fetch data but skip the BLE push (dry-run)
+    --demo            Use fake items; needs no config file or API keys
     --verbose / -v    Verbose logging
 """
 from __future__ import annotations
@@ -18,14 +25,20 @@ import argparse
 import asyncio
 import logging
 import sys
-import time
 from pathlib import Path
 
 import config as cfg_module
 import providers as prov_module
-from ble_client import send_subscription
+import render
+from providers import SubscriptionItem
 
 logger = logging.getLogger("epd_monitor")
+
+DEMO_ITEMS = [
+    SubscriptionItem("Copilot Pro", 1500, 375, 0, "req"),
+    SubscriptionItem("Kimi", 0, 0, 1234, "CNY"),
+    SubscriptionItem("DeepSeek", 2_000_000, 1_234_567, 0, "tkn"),
+]
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -46,12 +59,18 @@ async def _fetch_all(provider_cfgs: list[dict]) -> list:
         try:
             items = await provider.fetch()
             all_items.extend(items)
-            logger.info("[%s] ✓ %d item(s)", provider.name, len(items))
+            logger.info("[%s] fetched %d item(s)", provider.name, len(items))
         except prov_module.ProviderError as exc:
             logger.warning("%s", exc)
         except Exception as exc:  # noqa: BLE001
             logger.error("[%s] Unexpected error: %s", provider.name, exc)
-    return all_items[:3]  # EPD supports max 3 items
+    return all_items[:render.MAX_ITEMS]
+
+
+async def _collect_items(cfg: dict, demo: bool) -> list:
+    if demo:
+        return list(DEMO_ITEMS)
+    return await _fetch_all(cfg["providers"])
 
 
 def _print_items(items: list) -> None:
@@ -71,8 +90,8 @@ def _print_items(items: list) -> None:
 
 # ── commands ────────────────────────────────────────────────────────────────
 
-async def cmd_push(cfg: dict, no_ble: bool) -> None:
-    items = await _fetch_all(cfg["providers"])
+async def cmd_push(cfg: dict, no_ble: bool, demo: bool) -> None:
+    items = await _collect_items(cfg, demo)
     _print_items(items)
     if no_ble:
         print("--no-ble: skipping BLE push.")
@@ -80,27 +99,37 @@ async def cmd_push(cfg: dict, no_ble: bool) -> None:
     if not items:
         print("Nothing to push.")
         return
-    await send_subscription(
-        items,
-        device_name=cfg["device_name"],
-        device_address=cfg.get("device_address", ""),
-        refresh_interval=int(cfg["refresh_interval"]),
-        trigger_refresh=bool(cfg["trigger_refresh"]),
-        scan_timeout=float(cfg["scan_timeout"]),
-    )
+    from ble_client import push_frame
+
+    await push_frame(items, cfg, fast=bool(cfg.get("fast_write")),
+                     title=str(cfg.get("title", "SUB MONITOR")),
+                     font_path=cfg.get("font_path") or None)
 
 
-async def cmd_status(cfg: dict) -> None:
-    items = await _fetch_all(cfg["providers"])
+async def cmd_render(cfg: dict, demo: bool, out: Path, preview: Path,
+                     driver_id: int) -> None:
+    items = await _collect_items(cfg, demo)
     _print_items(items)
+    image = render.compose(items, title=str(cfg.get("title", "SUB MONITOR")),
+                           font_path=cfg.get("font_path") or None)
+    image.save(preview)
+    planes = render.pack_planes(image, driver_id,
+                                planes=2 if driver_id == 3 else 1)
+    out.write_bytes(b"".join(plane.data for plane in planes))
+    print(f"{len(items)} item(s) → {preview} and {out} "
+          f"({out.stat().st_size} bytes, checksum {render.checksum(planes[0].data)})")
 
 
-async def cmd_daemon(cfg: dict, no_ble: bool) -> None:
+async def cmd_status(cfg: dict, demo: bool) -> None:
+    _print_items(await _collect_items(cfg, demo))
+
+
+async def cmd_daemon(cfg: dict, no_ble: bool, demo: bool) -> None:
     interval = int(cfg["refresh_interval"])
-    print(f"Daemon mode — refreshing every {interval}s. Ctrl-C to stop.")
+    print(f"Daemon mode — pushing every {interval}s. Ctrl-C to stop.")
     while True:
         try:
-            await cmd_push(cfg, no_ble)
+            await cmd_push(cfg, no_ble, demo)
         except Exception as exc:  # noqa: BLE001
             logger.error("Push failed: %s", exc)
         logger.info("Sleeping %ds…", interval)
@@ -122,6 +151,9 @@ async def cmd_scan(scan_timeout: float) -> None:
 
 # ── main ────────────────────────────────────────────────────────────────────
 
+_NEEDS_CONFIG = {"push", "daemon", "status", "render"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="EPD42 subscription monitor — PC companion",
@@ -129,7 +161,7 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=["push", "status", "daemon", "scan"],
+        choices=["push", "daemon", "status", "render", "scan", "describe"],
         help="Command to run",
     )
     parser.add_argument(
@@ -137,46 +169,62 @@ def main() -> int:
         default=str(Path(__file__).parent / "config.toml"),
         help="Path to TOML config file (default: config.toml)",
     )
-    parser.add_argument(
-        "--no-ble",
-        action="store_true",
-        help="Fetch data but do not connect to BLE device (dry-run)",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging",
-    )
+    parser.add_argument("--no-ble", action="store_true",
+                        help="Fetch data but do not connect to BLE device (dry-run)")
+    parser.add_argument("--demo", action="store_true",
+                        help="Use built-in sample items; no config file or API keys needed")
+    parser.add_argument("--out", type=Path, default=Path("frame.bin"),
+                        help="render: where to write the packed frame")
+    parser.add_argument("--preview", type=Path, default=Path("preview.png"),
+                        help="render: where to write the PNG of the composed frame")
+    parser.add_argument("--driver", type=int, default=2, choices=sorted(render.DRIVER_PLANES),
+                        help="render: driver id to pack for (1, 2 = BW; 3 = BWR)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
-    # Load config (not needed for scan)
     cfg: dict = {}
-    if args.command != "scan":
+    if args.command in _NEEDS_CONFIG and not args.demo:
         try:
             cfg = cfg_module.load(args.config)
         except FileNotFoundError:
             print(
                 f"Config file not found: {args.config}\n"
-                "Copy config.example.toml to config.toml and fill in your API keys.",
+                "Copy config.example.toml to config.toml and fill in your API keys, "
+                "or pass --demo.",
                 file=sys.stderr,
             )
             return 1
         except (ValueError, KeyError) as exc:
             print(f"Config error: {exc}", file=sys.stderr)
             return 1
+    elif args.command in ("scan", "describe", "render"):
+        if Path(args.config).exists():
+            try:
+                cfg = cfg_module.load(args.config)
+            except (ValueError, KeyError) as exc:
+                print(f"Config error: {exc}", file=sys.stderr)
+                return 1
+        else:
+            cfg = cfg_module.defaults()
 
     log_level = "DEBUG" if args.verbose else cfg.get("log_level", "INFO")
     _setup_logging(log_level)
 
     try:
         if args.command == "push":
-            asyncio.run(cmd_push(cfg, args.no_ble))
-        elif args.command == "status":
-            asyncio.run(cmd_status(cfg))
+            asyncio.run(cmd_push(cfg, args.no_ble, args.demo))
         elif args.command == "daemon":
-            asyncio.run(cmd_daemon(cfg, args.no_ble))
+            asyncio.run(cmd_daemon(cfg, args.no_ble, args.demo))
+        elif args.command == "status":
+            asyncio.run(cmd_status(cfg, args.demo))
+        elif args.command == "render":
+            asyncio.run(cmd_render(cfg, args.demo, args.out, args.preview, args.driver))
         elif args.command == "scan":
             asyncio.run(cmd_scan(float(cfg.get("scan_timeout", 10))))
+        elif args.command == "describe":
+            from ble_client import describe as ble_describe
+
+            asyncio.run(ble_describe(cfg))
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except RuntimeError as exc:

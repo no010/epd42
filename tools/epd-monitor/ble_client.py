@@ -1,170 +1,215 @@
-"""BLE client for EPD42 subscription monitor.
+"""BLE client that streams a host-composed packed frame to the EPD42.
 
-Connects to the EPD42 device via BLE and sends subscription data
-using the EPD_CMD_SET_SUBSCRIPTION_DATA (0xA0) command, then
-optionally triggers an immediate refresh with EPD_CMD_TRIGGER_REFRESH (0xA2).
+Protocol: EPD_CMD_STREAM_* (0xB0..0xB5), mirrored in ``protocol``.  The device
+keeps no framebuffer, so every byte of a plane is forwarded to the panel as it
+arrives.
 
-Protocol (from EPD/EPD_ble.h):
-  - Write 1 byte command + payload to the EPD characteristic
-  - EPD service UUID: based on vendor-specific UUID type 0x0001
-  - The characteristic supports Write + Notify
-
-subscription_data_t layout (packed, little-endian):
-  uint32  refresh_interval_sec
-  uint8   item_count
-  items[3]:
-    char[16] plan_name
-    uint32   quota_total
-    uint32   quota_used
-    uint32   balance
-    char[4]  unit
-    uint8    valid          (0xA5)
-  char[16] last_update      ("MM-DD HH:MM\\0")
-  uint8    valid_marker     (0xA5)
-  uint8[3] _pad
-  uint32   checksum
+Flow control relies on notifications, not on the GATT write response: the
+SoftDevice answers writes on the application's behalf, so a write response
+only proves the packet reached the link layer.  BEGIN and END therefore block
+until the device notifies its ack, which happens after the panel has actually
+been initialised or refreshed.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import struct
 import time
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
 from typing import Sequence
 
 from bleak import BleakClient, BleakScanner
 
+import protocol
+import render
 from providers import SubscriptionItem
 
 logger = logging.getLogger(__name__)
 
-# ── EPD service / characteristic UUIDs ──────────────────────────────────────
-# The base UUID is Nordic's 128-bit vendor UUID from the original firmware.
-# EPD_SERVICE_UUID  → 0001xxxx-0000-1000-8000-00805f9b34fb  (short UUID 0x0001)
-# EPD_CHAR_UUID     → Nordic UART-style single characteristic
-# The exact 128-bit UUID depends on the base registered in the SoftDevice;
-# for the no010/epd42 firmware it uses Nordic's base UUID type with short 0x0001.
-EPD_BASE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"   # Nordic UART Service UUID
-EPD_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # NUS RX characteristic
-
-# EPD command bytes
-EPD_CMD_SET_SUBSCRIPTION_DATA = 0xA0
-EPD_CMD_TRIGGER_REFRESH       = 0xA2
-
-# Validity marker
-SUBSCRIPTION_VALID_MARKER = 0xA5
-
-# Maximum items the firmware supports
-SUBSCRIPTION_MAX_ITEMS = 3
-
-# BLE MTU default leaves 20 bytes per write; we chunk as needed
-_WRITE_CHUNK = 20
+ACK_TIMEOUT_S = 10.0
 
 
-@dataclass
-class SubscriptionPayload:
-    items: list[SubscriptionItem]
-    refresh_interval_sec: int = 1800
-    last_update: str = ""
+class EpdError(RuntimeError):
+    """The device rejected the transfer or never answered."""
 
 
-def _pack_subscription(payload: SubscriptionPayload) -> bytes:
-    """Serialise subscription_data_t to bytes (packed little-endian)."""
-    items = payload.items[:SUBSCRIPTION_MAX_ITEMS]
-    refresh = payload.refresh_interval_sec
-    item_count = len(items)
+class EpdLink:
+    """One open connection to an EPD42, speaking the stream protocol."""
 
-    ts = payload.last_update or time.strftime("%m-%d %H:%M")
-    last_update_bytes = ts[:15].encode("ascii", errors="replace").ljust(16, b"\x00")
+    def __init__(self, client: BleakClient, char, acks: asyncio.Queue) -> None:
+        self._client = client
+        self._char = char
+        self._acks = acks
+        self.driver_id = 0
+        self.plane_bytes = 0
+        self.streaming = 0
 
-    # Pack items
-    item_bytes = b""
-    for item in items:
-        name = item.plan_name[:15].encode("ascii", errors="replace").ljust(16, b"\x00")
-        unit = item.unit[:3].encode("ascii", errors="replace").ljust(4, b"\x00")
-        item_bytes += struct.pack(
-            "<16sIII4sB",
-            name,
-            item.quota_total & 0xFFFFFFFF,
-            item.quota_used  & 0xFFFFFFFF,
-            item.balance     & 0xFFFFFFFF,
-            unit,
-            SUBSCRIPTION_VALID_MARKER,
+    async def _write(self, payload: bytes, response: bool = True) -> None:
+        await self._client.write_gatt_char(self._char, payload, response=response)
+
+    async def _await_ack(self, command: int) -> bytes:
+        """Return the next ack for ``command``, skipping unrelated notifications.
+
+        The firmware also notifies its pin config as soon as the CCCD is
+        written, so unsolicited packets must be dropped rather than mistaken
+        for an ack.
+        """
+        deadline = time.monotonic() + ACK_TIMEOUT_S
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                packet = await asyncio.wait_for(self._acks.get(), max(remaining, 0.01))
+            except asyncio.TimeoutError:
+                packet = b""
+            if packet and packet[0] == command:
+                return packet
+            if remaining <= 0:
+                raise EpdError(f"no ack for command 0x{command:02x} "
+                               f"within {ACK_TIMEOUT_S:.0f}s")
+
+    @staticmethod
+    def _check_status(packet: bytes, what: str) -> None:
+        status = packet[1] if len(packet) > 1 else 0xFF
+        if status != protocol.STATUS_OK:
+            raise EpdError(f"{what}: {protocol.describe_status(status)}")
+
+    async def query_status(self) -> None:
+        await self._write(bytes([protocol.CMD_GET_STATUS]))
+        packet = await self._await_ack(protocol.CMD_GET_STATUS)
+        if len(packet) < 8:
+            raise EpdError(f"short status reply: {packet.hex()}")
+        self.streaming = packet[protocol.STATUS_STREAMING]
+        self.plane_bytes = int.from_bytes(packet[protocol.STATUS_PLANE_BYTES:
+                                                 protocol.STATUS_PLANE_BYTES + 2], "little")
+        self.driver_id = packet[protocol.STATUS_DRIVER]
+        logger.info("device: driver=%d (%s), plane=%d bytes, plane in progress=%d",
+                    self.driver_id, render.DRIVER_NAMES.get(self.driver_id, "unknown"),
+                    self.plane_bytes, self.streaming)
+
+    async def stream_plane(self, index: int, data: bytes, *, last: bool,
+                           fast: bool = False) -> None:
+        """Push one packed plane.  Only the final plane triggers a refresh."""
+        # Refreshing between planes would make the device re-run the panel
+        # Init() for the next plane and erase what was just written.
+        flags = (protocol.FLAG_REFRESH | protocol.FLAG_SLEEP) if last else 0
+
+        await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
+        self._check_status(await self._await_ack(protocol.CMD_STREAM_BEGIN), "STREAM_BEGIN")
+
+        started = time.monotonic()
+        for packet in protocol.iter_chunks(data):
+            await self._write(packet, response=not fast)
+        elapsed = max(time.monotonic() - started, 1e-6)
+
+        await self._write(protocol.end_request(data, flags))
+        self._check_status(await self._await_ack(protocol.CMD_STREAM_END), "STREAM_END")
+        logger.info("plane %d: %d bytes in %.1fs (%.1f kB/s)",
+                    index, len(data), elapsed, len(data) / elapsed / 1024)
+
+    async def abort(self) -> None:
+        try:
+            await self._write(bytes([protocol.CMD_STREAM_ABORT]))
+            await self._await_ack(protocol.CMD_STREAM_ABORT)
+        except EpdError:
+            logger.debug("abort was not acked", exc_info=True)
+
+    async def sleep(self) -> None:
+        """Power the panel down before disconnecting, as the web host does."""
+        try:
+            await self._write(bytes([protocol.CMD_SLEEP]))
+        except Exception:  # noqa: BLE001 - best effort, the link may be gone
+            logger.debug("panel sleep command failed", exc_info=True)
+
+
+async def _find_device(cfg: dict):
+    address = cfg.get("device_address")
+    if address:
+        return address
+    name = cfg.get("device_name", "NRF_EPD")
+    timeout = float(cfg.get("scan_timeout", 15))
+    logger.info("scanning for '%s' (%.0fs)…", name, timeout)
+    device = await BleakScanner.find_device_by_name(name, timeout=timeout)
+    if device is None:
+        raise EpdError(
+            f"device '{name}' not found. The firmware advertises "
+            "NRF_EPD_<mac suffix> (see DEVICE_NAME in main.c) - set device_name "
+            "or device_address in config.toml."
         )
-    # Pad remaining item slots
-    item_struct_size = 16 + 4 + 4 + 4 + 4 + 1  # = 33 bytes
-    item_bytes = item_bytes.ljust(SUBSCRIPTION_MAX_ITEMS * item_struct_size, b"\x00")
-
-    # Build full structure (without checksum first)
-    body = struct.pack("<IB", refresh, item_count) + item_bytes + last_update_bytes
-    body += bytes([SUBSCRIPTION_VALID_MARKER]) + bytes(3)  # valid_marker + _pad[3]
-
-    # Compute simple sum checksum over all bytes so far
-    checksum = sum(body) & 0xFFFFFFFF
-    body += struct.pack("<I", checksum)
-
-    return body
-
-
-async def _find_device(device_name: str, timeout: float = 10.0):
-    """Scan for BLE device by name, return BleakDevice or None."""
-    logger.info("Scanning for '%s' (%.0fs timeout)…", device_name, timeout)
-    device = await BleakScanner.find_device_by_name(device_name, timeout=timeout)
     return device
 
 
-async def send_subscription(
-    items: Sequence[SubscriptionItem],
-    *,
-    device_name: str = "EPD42",
-    device_address: str = "",
-    refresh_interval: int = 1800,
-    trigger_refresh: bool = True,
-    scan_timeout: float = 15.0,
-) -> None:
-    """Find the EPD42 device and push subscription data via BLE.
-
-    Args:
-        items: Up to 3 subscription items to display.
-        device_name: BLE advertisement name to scan for.
-        device_address: Optional fixed MAC/UUID (skips scan when provided).
-        refresh_interval: Seconds between auto-refreshes stored on device.
-        trigger_refresh: Send TRIGGER_REFRESH command after pushing data.
-        scan_timeout: Seconds to wait during BLE scan.
-    """
-    payload = SubscriptionPayload(
-        items=list(items),
-        refresh_interval_sec=refresh_interval,
+async def _find_char(client: BleakClient):
+    """Locate the EPD characteristic, falling back to discovery by properties."""
+    for service in client.services:
+        if service.uuid.lower() == protocol.EPD_SERVICE_UUID:
+            for char in service.characteristics:
+                if "write" in char.properties and "notify" in char.properties:
+                    return char
+    # Vendor UUIDs differ between firmware forks, so accept the single
+    # writable+notifiable characteristic that is not a Bluetooth SIG one.
+    candidates = [
+        char for service in client.services
+        for char in service.characteristics
+        if "write" in char.properties and "notify" in char.properties
+        and not char.uuid.lower().startswith("0000")
+    ]
+    if len(candidates) == 1:
+        logger.info("using discovered characteristic %s", candidates[0].uuid)
+        return candidates[0]
+    raise EpdError(
+        f"no EPD characteristic found; service {protocol.EPD_SERVICE_UUID} absent "
+        f"and {len(candidates)} generic candidates. Run 'epd_monitor.py describe'."
     )
-    data_bytes = _pack_subscription(payload)
-    # Build the BLE write: command byte + payload
-    command_packet = bytes([EPD_CMD_SET_SUBSCRIPTION_DATA]) + data_bytes
 
-    if device_address:
-        device = device_address
-    else:
-        device = await _find_device(device_name, timeout=scan_timeout)
-        if device is None:
-            raise RuntimeError(
-                f"EPD42 device '{device_name}' not found. "
-                "Ensure the device is powered on and advertising."
-            )
 
-    logger.info("Connecting to %s…", device)
-    async with BleakClient(device, timeout=20) as client:
-        logger.info("Connected. Writing %d bytes…", len(command_packet))
-        # BLE characteristics have a max write size; chunk if needed
-        for offset in range(0, len(command_packet), _WRITE_CHUNK):
-            chunk = command_packet[offset: offset + _WRITE_CHUNK]
-            await client.write_gatt_char(EPD_CHAR_UUID, chunk, response=True)
-            await asyncio.sleep(0.05)
+@asynccontextmanager
+async def epd_session(cfg: dict):
+    """Yield a connected, subscribed :class:`EpdLink` with status already read."""
+    acks: asyncio.Queue = asyncio.Queue()
+    client = BleakClient(await _find_device(cfg), timeout=20)
+    async with client:
+        char = await _find_char(client)
+        await client.start_notify(char, lambda _, data: acks.put_nowait(bytes(data)))
+        link = EpdLink(client, char, acks)
+        await link.query_status()
+        yield link
 
-        if trigger_refresh:
-            logger.info("Sending TRIGGER_REFRESH…")
-            await asyncio.sleep(0.1)
-            await client.write_gatt_char(
-                EPD_CHAR_UUID, bytes([EPD_CMD_TRIGGER_REFRESH]), response=True
-            )
 
-    logger.info("Done — subscription data pushed to EPD42.")
+async def push_frame(items: Sequence[SubscriptionItem], cfg: dict, *,
+                     fast: bool = False, title: str = "SUB MONITOR",
+                     font_path: str | None = None) -> None:
+    """Compose ``items`` into a frame and stream it to the device."""
+    image = render.compose(items, title=title, font_path=font_path)
+
+    async with epd_session(cfg) as link:
+        if link.plane_bytes != render.PLANE_BYTES:
+            raise EpdError(f"device plane is {link.plane_bytes} bytes, renderer "
+                           f"produces {render.PLANE_BYTES}")
+
+        # A bi-colour panel needs its red plane too; a BW panel leaves it alone,
+        # exactly like the working web host does.
+        planes = render.pack_planes(image, link.driver_id,
+                                    planes=2 if link.driver_id == 3 else 1)
+        try:
+            for position, plane in enumerate(planes):
+                await link.stream_plane(plane.index, plane.data,
+                                        last=position == len(planes) - 1, fast=fast)
+        except EpdError:
+            await link.abort()
+            raise
+        await link.sleep()
+
+    logger.info("frame pushed")
+
+
+async def describe(cfg: dict) -> None:
+    """Print every service and characteristic the device exposes."""
+    client = BleakClient(await _find_device(cfg), timeout=20)
+    async with client:
+        print(f"device {client.address}")
+        for service in client.services:
+            marker = "  <-- expected EPD service" if service.uuid.lower() == protocol.EPD_SERVICE_UUID else ""
+            print(f"  service {service.uuid}{marker}")
+            for char in service.characteristics:
+                print(f"    char    {char.uuid}  properties={char.properties}  "
+                      f"handle={char.handle:#06x}")
