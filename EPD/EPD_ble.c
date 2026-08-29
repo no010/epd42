@@ -175,11 +175,22 @@ static uint32_t epd_config_save(epd_config_t *cfg)
 #define EPD_STREAM_REFRESH_TIMEOUT_MS  5000
 #define EPD_STREAM_PLANE_IDLE          0xFF
 
+/** PackBits decoder states. */
+enum EPD_RLE_MODES
+{
+    EPD_RLE_CONTROL = 0,                              /**< next byte is a control byte              */
+    EPD_RLE_LITERAL = 1,                              /**< copying a literal packet                 */
+    EPD_RLE_RUN_VALUE = 2                             /**< next byte is the value a run repeats     */
+};
+
 static void epd_stream_close_plane(ble_epd_t * p_epd)
 {
     p_epd->stream.plane = EPD_STREAM_PLANE_IDLE;
     p_epd->stream.received = 0;
     p_epd->stream.sum = 0;
+    p_epd->stream.rle_mode = EPD_RLE_CONTROL;
+    p_epd->stream.rle_left = 0;
+    p_epd->stream.overflow = 0;
 }
 
 /** Full reset: the next STREAM_BEGIN must run the panel Init() again. */
@@ -187,6 +198,74 @@ static void epd_stream_reset(ble_epd_t * p_epd)
 {
     epd_stream_close_plane(p_epd);
     p_epd->stream.initialized = 0;
+}
+
+/**@brief Forward one decoded pixel to the panel, tracking count and running sum. */
+static void epd_stream_put(ble_epd_t * p_epd, uint8_t byte)
+{
+    if (p_epd->stream.received >= p_epd->stream.limit)
+    {
+        p_epd->stream.overflow = 1;
+        return;
+    }
+    p_epd->driver->stream_write(&byte, 1);
+    p_epd->stream.received++;
+    p_epd->stream.sum += byte;
+}
+
+/**@brief Decode a run-length encoded slice of the plane.
+ *
+ * @details State lives in p_epd->stream, so a packet may end between a PackBits
+ *          control byte and the payload byte it governs.
+ */
+static void epd_stream_feed(ble_epd_t * p_epd, const uint8_t *data, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        uint8_t byte = data[i];
+
+        switch (p_epd->stream.rle_mode)
+        {
+          case EPD_RLE_LITERAL:
+            epd_stream_put(p_epd, byte);
+            if (--p_epd->stream.rle_left == 0)
+            {
+                p_epd->stream.rle_mode = EPD_RLE_CONTROL;
+            }
+            break;
+
+          case EPD_RLE_RUN_VALUE:
+            p_epd->stream.rle_mode = EPD_RLE_CONTROL;
+            for (uint8_t n = 0; n < p_epd->stream.rle_left; n++)
+            {
+                epd_stream_put(p_epd, byte);
+            }
+            break;
+
+          case EPD_RLE_CONTROL:
+          default:
+            if (byte == 128)
+            {
+                break; /* PackBits no-op */
+            }
+            if (byte < 128)
+            {
+                p_epd->stream.rle_mode = EPD_RLE_LITERAL;
+                p_epd->stream.rle_left = (uint8_t)(byte + 1);
+            }
+            else
+            {
+                p_epd->stream.rle_mode = EPD_RLE_RUN_VALUE;
+                p_epd->stream.rle_left = (uint8_t)(257 - byte);
+            }
+            break;
+        }
+
+        if (p_epd->stream.overflow)
+        {
+            return;
+        }
+    }
 }
 
 static uint16_t epd_stream_le16(const uint8_t *p)
@@ -236,7 +315,12 @@ static void on_disconnect(ble_epd_t * p_epd, ble_evt_t * p_ble_evt)
 static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t length)
 {
     if (p_data == NULL || length <= 0) return;
-    NRF_LOG_DEBUG("[EPD]: CMD=0x%02x, LEN=%d\n", p_data[0], length);
+    /* STREAM_DATA is the hot path - ~87 per plane - and would crowd the
+     * deferred log ring out of the commands worth reading about. */
+    if (p_data[0] != EPD_CMD_STREAM_DATA)
+    {
+        NRF_LOG_DEBUG("[EPD]: CMD=0x%02x, LEN=%d\n", p_data[0], length);
+    }
 
     uint32_t    err_code;
 
@@ -356,6 +440,12 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
                   ack[1] = EPD_STREAM_STATUS_OK;
                   ack[2] = p_data[1];
 
+                  /* A retry mid-frame, or one after a doomed plane, must start
+                   * from a re-initialised panel rather than continue it. */
+                  if (p_epd->stream.plane != EPD_STREAM_PLANE_IDLE || p_epd->stream.overflow)
+                  {
+                      epd_stream_reset(p_epd);
+                  }
                   if (!p_epd->stream.initialized)
                   {
                       p_epd->driver->init();
@@ -363,6 +453,7 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
                   }
                   p_epd->driver->stream_begin(p_data[1]);
                   p_epd->stream.plane = p_data[1];
+                  p_epd->stream.limit = plane_bytes;
                   p_epd->stream.received = 0;
                   p_epd->stream.sum = 0;
               }
@@ -372,25 +463,19 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
 
       case EPD_CMD_STREAM_DATA:
           {
-              uint16_t length_of_data = length - 1;
-
-              if (p_epd->stream.plane == EPD_STREAM_PLANE_IDLE)
+              if (p_epd->stream.plane == EPD_STREAM_PLANE_IDLE || p_epd->stream.overflow)
               {
-                  return; /* no plane open: nothing sensible to do with raw pixels */
+                  return; /* no plane open, or the frame is already doomed */
               }
-              if (p_epd->stream.received + length_of_data > p_epd->driver->plane_bytes())
+
+              epd_stream_feed(p_epd, &p_data[1], length - 1);
+
+              if (p_epd->stream.overflow)
               {
+                  /* Report early so the host can stop sending; the plane stays
+                   * marked so STREAM_END can say the same thing. */
                   uint8_t ack[2] = { EPD_CMD_STREAM_DATA, EPD_STREAM_STATUS_OVERRUN };
-                  epd_stream_reset(p_epd);
                   ble_epd_string_send(p_epd, ack, sizeof(ack));
-                  return;
-              }
-
-              p_epd->driver->stream_write(&p_data[1], length_of_data);
-              p_epd->stream.received += length_of_data;
-              for (uint16_t i = 0; i < length_of_data; i++)
-              {
-                  p_epd->stream.sum += p_data[1 + i];
               }
           }
           break;
@@ -409,16 +494,17 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
                   uint16_t received = p_epd->stream.received;
                   uint32_t sum = p_epd->stream.sum;
 
-                  if (expected_bytes != plane_bytes ||
-                      received != expected_bytes ||
-                      sum != expected_sum)
+                  if (p_epd->stream.overflow || expected_bytes != plane_bytes
+                      || received != expected_bytes)
                   {
-                      /* A half-written plane shows garbage, so drop the frame and
-                       * force the next one through a fresh Init(). */
-                      status = (received == expected_bytes) ? EPD_STREAM_STATUS_VERIFY_FAILED
-                                                            : EPD_STREAM_STATUS_OVERRUN;
+                      status = EPD_STREAM_STATUS_OVERRUN;
                   }
-                  else if (flags & EPD_STREAM_FLAG_REFRESH)
+                  else if (sum != expected_sum)
+                  {
+                      status = EPD_STREAM_STATUS_VERIFY_FAILED;
+                  }
+
+                  if (status == EPD_STREAM_STATUS_OK && (flags & EPD_STREAM_FLAG_REFRESH))
                   {
                       if (!p_epd->driver->display_timeout(EPD_STREAM_REFRESH_TIMEOUT_MS))
                       {

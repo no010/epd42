@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 import config as cfg_module
+import protocol
 import providers as prov_module
 import render
 from providers import SubscriptionItem
@@ -116,8 +117,11 @@ async def cmd_render(cfg: dict, demo: bool, out: Path, preview: Path,
     planes = render.pack_planes(image, driver_id,
                                 planes=2 if driver_id == 3 else 1)
     out.write_bytes(b"".join(plane.data for plane in planes))
+    encoded = sum(len(protocol.packbits_encode(plane.data)) for plane in planes)
     print(f"{len(items)} item(s) → {preview} and {out} "
-          f"({out.stat().st_size} bytes, checksum {render.checksum(planes[0].data)})")
+          f"({out.stat().st_size} bytes, encoded {encoded} bytes = "
+          f"{-(-encoded // protocol.DATA_CHUNK)} packets, "
+          f"checksum {render.checksum(planes[0].data)})")
 
 
 async def cmd_status(cfg: dict, demo: bool) -> None:

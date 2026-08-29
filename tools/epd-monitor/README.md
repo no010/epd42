@@ -60,9 +60,13 @@ Wire convention — the same one the working web host in `html/` uses:
 
 - MSB is the leftmost pixel of a byte
 - bit `1` = white paper, bit `0` = black ink
-- one plane is `50 * 300 = 15000` bytes, streamed as 790 packets of 19 pixels
-  (20-byte ATT value minus the command byte; S110/S130 are Bluetooth 4.1, so
-  there is no MTU exchange to grow it)
+- one plane is `50 * 300 = 15000` raw bytes
+- the plane is **run-length encoded (TIFF PackBits, no end-of-line marker)**
+  before packetising. This UI is ~90% paper white, so 15000 bytes encode to
+  ~1650 — **87 writes instead of 790**. Incompressible data expands by at most
+  one byte per 128.
+- each write carries the command byte plus up to 19 payload bytes (the 20-byte
+  ATT ceiling: S110/S130 are Bluetooth 4.1, with no MTU exchange to grow it)
 
 | plane | driver 1 `EPD_DRIVER_4IN2` | driver 2 `EPD_DRIVER_4IN2_V2` | driver 3 `EPD_DRIVER_4IN2B_V2` |
 |-------|--------------------------|-------------------------------|--------------------------------|
@@ -76,7 +80,7 @@ only the final plane carries the refresh flag.
 |---------|------|-----------|---------|
 | `EPD_CMD_STREAM_BEGIN` | `0xB0` | host → device | `[plane]` |
 |                        |        | device → host (notify) | `[status, plane, plane_bytes_le16]` |
-| `EPD_CMD_STREAM_DATA`  | `0xB1` | host → device | `[pixel x 1..19]`, no reply |
+| `EPD_CMD_STREAM_DATA`  | `0xB1` | host → device | `[encoded x 1..19]`, no reply |
 | `EPD_CMD_STREAM_END`   | `0xB2` | host → device | `[bytes_le16, sum_le32, flags]` |
 |                        |        | device → host (notify) | `[status, received_le16, sum_le32]` |
 | `EPD_CMD_STREAM_ABORT` | `0xB3` | host → device | — |
@@ -84,15 +88,30 @@ only the final plane carries the refresh flag.
 |                        |        | device → host (notify) | `[streaming, plane, received_le16, plane_bytes_le16, driver]` |
 
 `flags`: `0x01` refresh, `0x02` put the panel to sleep. `status`: see
-`EPD_STREAM_STATUS_*` in `EPD/EPD_ble.h`.
+`EPD_STREAM_STATUS_*` in `EPD/EPD_ble.h`. The byte count and sum in
+`STREAM_END` describe the **decoded** plane, so encoding is invisible to the
+check.
 
 Flow control uses the notifications, not the GATT write response: the
 SoftDevice answers writes on the application's behalf, so a write response
 only proves the packet reached the link layer. The client therefore waits for
 the `STREAM_BEGIN` and `STREAM_END` acks, which the device sends after the
-panel has actually been initialised or refreshed. A plane whose byte count or
-running sum does not verify is dropped without refreshing, and the next frame
-starts from a fresh panel `Init()`.
+panel has actually been initialised or refreshed. A plane whose decoded byte
+count or running sum does not verify is dropped without refreshing, and the
+next frame starts from a fresh panel `Init()`.
+
+**No per-packet checksum, on purpose.** Every BLE data-channel PDU already
+carries a 24-bit CRC, and with write-with-response the link layer retransmits a
+bad one before the ATT response is sent — so a corrupted pixel reaching the
+panel is not a failure mode a byte-level check could catch. What it *could*
+catch, a dropped write in `fast_write` mode or a device reset mid-frame, is
+detectable but not repairable: PackBits is positional, so the device cannot
+resume at packet *k* without replaying from the start of the plane. Restarting
+the plane is exactly what `STREAM_END` already triggers, and costs 87 writes —
+about 0.7 s at a 7.5 ms interval, 1.3 s at 15 ms, 2.6 s at 30 ms. Per-packet
+checks would add ~5% to that transfer and still end in the same restart. They
+would earn their keep only once writes become seekable, i.e. row-window
+updates, where a single row can be resent on its own.
 
 ## Supported Providers
 

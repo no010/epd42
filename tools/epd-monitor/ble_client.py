@@ -86,25 +86,27 @@ class EpdLink:
                     self.driver_id, render.DRIVER_NAMES.get(self.driver_id, "unknown"),
                     self.plane_bytes, self.streaming)
 
-    async def stream_plane(self, index: int, data: bytes, *, last: bool,
+    async def stream_plane(self, index: int, raw: bytes, *, last: bool,
                            fast: bool = False) -> None:
         """Push one packed plane.  Only the final plane triggers a refresh."""
         # Refreshing between planes would make the device re-run the panel
         # Init() for the next plane and erase what was just written.
         flags = (protocol.FLAG_REFRESH | protocol.FLAG_SLEEP) if last else 0
+        encoded = protocol.packbits_encode(raw)
 
         await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
         self._check_status(await self._await_ack(protocol.CMD_STREAM_BEGIN), "STREAM_BEGIN")
 
         started = time.monotonic()
-        for packet in protocol.iter_chunks(data):
+        for packet in protocol.iter_chunks(encoded):
             await self._write(packet, response=not fast)
         elapsed = max(time.monotonic() - started, 1e-6)
 
-        await self._write(protocol.end_request(data, flags))
+        await self._write(protocol.end_request(raw, flags))
         self._check_status(await self._await_ack(protocol.CMD_STREAM_END), "STREAM_END")
-        logger.info("plane %d: %d bytes in %.1fs (%.1f kB/s)",
-                    index, len(data), elapsed, len(data) / elapsed / 1024)
+        logger.info("plane %d: %d -> %d bytes (%.0f%%) in %.1fs, %d packets, %.1f kB/s",
+                    index, len(raw), len(encoded), 100.0 * len(encoded) / len(raw),
+                    -(-len(encoded) // protocol.DATA_CHUNK), len(encoded) / elapsed / 1024)
 
     async def abort(self) -> None:
         try:

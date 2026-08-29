@@ -61,9 +61,13 @@ enum EPD_CMDS
      *  device never holds one: every byte of a plane is pushed straight into
      *  the panel's RAM.  Wire polarity is the panel's own (1 = white).
      *
+     *  Pixel data is run-length encoded (TIFF PackBits, no end-of-line
+     *  marker) because a frame of this UI is ~90% paper white: 15000 raw
+     *  bytes encode to roughly 1650, i.e. 87 writes instead of 790.
+     *
      *  EPD_CMD_STREAM_BEGIN  in : [cmd][plane]
      *                      out : [cmd][status][plane][plane_bytes_le16]
-     *  EPD_CMD_STREAM_DATA   in : [cmd][pixel x 1..19]        (no response)
+     *  EPD_CMD_STREAM_DATA   in : [cmd][encoded x 1..19]        (no response)
      *  EPD_CMD_STREAM_END    in : [cmd][bytes_le16][sum_le32][flags]
      *                      out : [cmd][status][received_le16][sum_le32]
      *  EPD_CMD_STREAM_ABORT  in : [cmd]
@@ -72,10 +76,13 @@ enum EPD_CMDS
      *                      out : [cmd][streaming][plane][received_le16]
      *                           [plane_bytes_le16][driver]
      *
+     *  The byte count and sum in STREAM_END describe the DECODED plane, so
+     *  encoding is invisible to the verification.
+     *
      *  STREAM_END flags: bit0 = refresh, bit1 = put the panel to sleep.
      *  Status codes are EPD_STREAM_STATUS_*. */
     EPD_CMD_STREAM_BEGIN      = 0xB0,                 /**< start a plane, device acks via notify */
-    EPD_CMD_STREAM_DATA       = 0xB1,                 /**< append packed pixels to the open plane */
+    EPD_CMD_STREAM_DATA       = 0xB1,                 /**< append run-length encoded pixels */
     EPD_CMD_STREAM_END        = 0xB2,                 /**< verify the plane, optionally refresh */
     EPD_CMD_STREAM_ABORT      = 0xB3,                 /**< abandon the frame, leaving the panel as is */
     EPD_CMD_GET_STATUS        = 0xB5,                 /**< report stream progress and active driver */
@@ -96,8 +103,8 @@ enum EPD_STREAM_STATUS
 {
     EPD_STREAM_STATUS_OK             = 0x00,
     EPD_STREAM_STATUS_BAD_COMMAND    = 0x01, /**< malformed request, or no plane open */
-    EPD_STREAM_STATUS_OVERRUN        = 0x02, /**< more bytes than the plane holds */
-    EPD_STREAM_STATUS_VERIFY_FAILED  = 0x03, /**< byte count or checksum mismatch */
+    EPD_STREAM_STATUS_OVERRUN        = 0x02, /**< decoded length does not match the plane */
+    EPD_STREAM_STATUS_VERIFY_FAILED  = 0x03, /**< decoded sum mismatch: bytes arrived corrupted */
     EPD_STREAM_STATUS_BUSY_TIMEOUT   = 0x04, /**< panel never left busy */
 };
 
@@ -138,16 +145,21 @@ typedef struct
 
 /**@brief Packed-bit stream state, valid for one connection.
  *
- * @details The host composes the frame, so the device only needs to know how
- *          far the current plane has got: it forwards bytes as they arrive and
- *          verifies count plus running sum on EPD_CMD_STREAM_END.
+ * @details The host composes and run-length encodes the frame, so the device
+ *          only needs to know how far the current plane has got: it decodes
+ *          bytes as they arrive, forwards them to the panel, and verifies the
+ *          decoded count plus running sum on EPD_CMD_STREAM_END.
  */
 typedef struct
 {
     uint8_t  plane;                                   /**< plane currently open, or 0xFF when idle  */
     uint8_t  initialized;                             /**< panel Init() done for this frame          */
-    uint16_t received;                                /**< bytes forwarded into the open plane       */
-    uint32_t sum;                                     /**< running byte sum for verification         */
+    uint16_t received;                                /**< decoded bytes forwarded to the panel      */
+    uint16_t limit;                                   /**< bytes in the open plane, cached           */
+    uint32_t sum;                                     /**< running sum over decoded bytes            */
+    uint8_t  rle_mode;                                /**< where in the PackBits stream we are       */
+    uint8_t  rle_left;                                /**< bytes still owed by the current packet    */
+    uint8_t  overflow;                                /**< decoded past the end of the plane         */
 } epd_stream_t;
 
 /**@brief EPD Service structure.

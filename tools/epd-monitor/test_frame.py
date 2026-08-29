@@ -37,6 +37,14 @@ def check(condition: bool, description: str) -> None:
     print(f"  ok  {description}")
 
 
+def demo_plane() -> bytes:
+    """A realistic frame: mostly paper white, which is what the encoder banks on."""
+    items = [Item("Copilot Pro", 1500, 375, 0, "req"),
+             Item("Kimi", 0, 0, 1234, "CNY"),
+             Item("DeepSeek", 2_000_000, 1_234_567, 0, "tkn")]
+    return render.pack_plane(render.compose(items, updated="08-29 10:30"))
+
+
 def frame(value: int = 255) -> Image.Image:
     return Image.new("L", (render.SCREEN_WIDTH, render.SCREEN_HEIGHT), value)
 
@@ -87,23 +95,60 @@ def test_checksum() -> None:
 
 def test_chunking() -> None:
     print("chunking")
-    data = render.pack_plane(frame())
+    data = bytes(range(256)) * 3
     packets = list(protocol.iter_chunks(data))
-    check(len(packets) == 790 == -(-render.PLANE_BYTES // protocol.DATA_CHUNK),
-          f"{render.PLANE_BYTES} bytes stream as 790 packets of {protocol.DATA_CHUNK} pixels")
     check(all(len(p) <= protocol.DATA_CHUNK + 1 for p in packets),
           "no packet exceeds the 20-byte ATT value the firmware advertises")
     check(all(p[0] == protocol.CMD_STREAM_DATA for p in packets),
           "every packet is tagged EPD_CMD_STREAM_DATA")
-    check(b"".join(p[1:] for p in packets) == data, "the packets reassemble to the exact plane")
-    check(len(packets[-1]) == render.PLANE_BYTES % protocol.DATA_CHUNK + 1,
-          "the last packet carries only the 9 leftover pixels")
+    check(b"".join(p[1:] for p in packets) == data, "the packets reassemble to the exact stream")
+    check(len(packets) == -(-len(data) // protocol.DATA_CHUNK), "one packet per 19 payload bytes")
 
     request = protocol.end_request(b"\x01\x02\xff", protocol.FLAG_REFRESH | protocol.FLAG_SLEEP)
     check(request[0] == protocol.CMD_STREAM_END, "STREAM_END starts with its command byte")
     check(int.from_bytes(request[1:3], "little") == 3, "then the little-endian byte count")
     check(int.from_bytes(request[3:7], "little") == 258, "then the little-endian running sum")
     check(request[7] == 0x03 and len(request) == 8, "then the flags, in 8 bytes total")
+
+
+def test_packbits() -> None:
+    print("packbits")
+    import os
+
+    cases = {
+        "empty": b"",
+        "one byte": b"\xff",
+        "all white": bytes([0xFF]) * render.PLANE_BYTES,
+        "all black": bytes([0x00]) * render.PLANE_BYTES,
+        "random": os.urandom(render.PLANE_BYTES),
+        "runs of two": b"\x00\x01" * (render.PLANE_BYTES // 2),
+        "runs of three": b"\x00\x00\x01" * (render.PLANE_BYTES // 3),
+        "alternating": bytes(range(256)) * (render.PLANE_BYTES // 256),
+    }
+    for label, plane in cases.items():
+        encoded = protocol.packbits_encode(plane)
+        check(protocol.packbits_decode(encoded) == plane, f"{label}: round-trips")
+        check(len(encoded) <= len(plane) + len(plane) // 128 + 2,
+              f"{label}: expansion stays bounded ({len(encoded)} for {len(plane)})")
+
+    # The firmware carries decoder state across GATT writes, so the packet
+    # boundary must not change the result at any split point.
+    plane = demo_plane()
+    encoded = protocol.packbits_encode(plane)
+    for split in (1, 2, 3, 19, 20, 21, 37, 38, 39, len(encoded) - 1):
+        decoder = protocol.PackbitsDecoder()
+        for offset in range(0, len(encoded), split):
+            decoder.feed(encoded[offset:offset + split])
+        check(decoder.decoded() == plane, f"decodes identically when sliced every {split} bytes")
+
+    truncated = protocol.PackbitsDecoder()
+    truncated.feed(encoded[:len(encoded) // 2])
+    check(len(truncated.decoded()) < render.PLANE_BYTES,
+          "a truncated stream decodes short, which STREAM_END reports as a length mismatch")
+
+    check(len(encoded) < 2500, f"the demo frame encodes to {len(encoded)} bytes "
+                               f"({-(-len(encoded) // protocol.DATA_CHUNK)} packets), "
+                               f"within the 2500-byte budget")
 
 
 def test_composition() -> None:
@@ -212,9 +257,20 @@ def test_firmware_parity() -> None:
                           text, re.S).group(0)
         check("~" not in write, f"driver {driver} forwards bytes without inverting them")
 
+    ble = (FIRMWARE / "EPD" / "EPD_ble.c").read_text(encoding="utf-8")
+    feed = re.search(r"static void epd_stream_feed\(.*?\n\}\n", ble, re.S).group(0)
+    check("EPD_RLE_CONTROL" in feed and "EPD_RLE_LITERAL" in feed and "EPD_RLE_RUN_VALUE" in feed,
+          "the C decoder keeps the same three states as the Python mirror")
+    check("byte == 128" in feed, "the C decoder honours the PackBits no-op")
+    check("byte + 1" in feed and "257 - byte" in feed,
+          "the C decoder's control arithmetic matches (literal = n+1, run = 257-n)")
+    check("rle_mode = EPD_RLE_CONTROL" in ble.split("static void epd_stream_close_plane")[1]
+          .split("}")[0],
+          "closing a plane resets the decoder, so a retry never inherits mid-packet state")
+
 
 def main() -> int:
-    for test in (test_geometry, test_packing, test_checksum, test_chunking,
+    for test in (test_geometry, test_packing, test_checksum, test_chunking, test_packbits,
                  test_composition, test_planes, test_firmware_parity):
         test()
     print("\nall checks passed")
