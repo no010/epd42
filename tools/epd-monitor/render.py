@@ -4,6 +4,11 @@ The firmware deliberately holds no framebuffer and no font: it forwards the
 bytes produced here straight into the panel's RAM.  Everything visual -
 layout, typography, progress bars - lives in this module.
 
+Layout is measured, not assumed.  Card height comes from the item count and
+every row offset comes from the metrics of the font that was actually loaded,
+so a font whose line height is not 16 px can no longer push text into a
+progress bar, and one item fills the screen instead of sitting in it.
+
 Wire convention (must match the firmware, see EPD/EPD_4in2*.c):
   * MSB is the leftmost pixel of a byte
   * bit = 1 means white paper, bit = 0 means black ink
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Sequence
 
 SCREEN_WIDTH = 400
@@ -23,30 +29,46 @@ PLANE_BYTES = LINE_BYTES * SCREEN_HEIGHT
 # Plane RAM commands per driver, in stream order.  Mirrors the switch in
 # EPD/EPD_4in2.c, EPD/EPD_4in2_V2.c and EPD/EPD_4in2b_V2.c.
 DRIVER_PLANES: dict[int, tuple[int, ...]] = {
-    1: (0x10, 0x13),      # EPD_DRIVER_4IN2      - old data, new data
+    1: (0x10, 0x13),      # EPD_DRIVER_4IN2      - UC8176: old data, new data
     2: (0x24, 0x26),      # EPD_DRIVER_4IN2_V2   - black, second plane
-    3: (0x10, 0x13),      # EPD_DRIVER_4IN2B_V2  - black, red
+    3: (0x10, 0x13),      # EPD_DRIVER_4IN2B_V2  - UC8276C: black, red
 }
 DRIVER_NAMES = {
-    1: "4.2in e-Paper",
+    1: "4.2in e-Paper (UC8176)",
     2: "4.2in e-Paper V2 (BW)",
-    3: "4.2in e-Paper B V2 (BWR)",
+    3: "4.2in e-Paper B V2 (UC8276C)",
 }
 
 MAX_ITEMS = 3
-
-# Vertical grid, inherited from the layout the firmware used to render.
-TITLE_ROW = 0
-RULE_ROW = 16
-ITEM0_ROW = 20
-ITEM_STRIDE = 44
-NAME_OFFSET = 0
-USAGE_OFFSET = 16
-BAR_OFFSET = 32
-BAR_HEIGHT = 4
-UPDATED_ROW = 280
-TEXT_HEIGHT = 16
 MARGIN_X = 8
+MIN_FONT_PX = 14
+MAX_FONT_PX = 40
+STAMP_FONT_PX = 16
+BAR_MIN_PX = 4
+
+# Only fonts known to carry CJK glyphs.  Pillow exposes no cmap API, so rather
+# than guess at coverage, a font is only auto-selected from a list where CJK is
+# a fact - a screen full of tofu is not a visible enough failure.
+CJK_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/msyh.ttc",          # 微软雅黑
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "C:/Windows/Fonts/simhei.ttf",        # 黑体
+    "C:/Windows/Fonts/simsun.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+)
+# Tabular digits, so a column of numbers does not shift sideways between
+# refreshes as the digits change.
+MONO_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/consola.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+)
+
+
+class FontError(RuntimeError):
+    """No usable font: raise instead of drawing tofu nobody notices."""
 
 
 @dataclass(frozen=True)
@@ -57,33 +79,159 @@ class Plane:
     data: bytes
 
 
-def _font(font_path: str | None = None):
+@dataclass(frozen=True)
+class Layout:
+    """Measured geometry for one frame, derived from item count and fonts.
+
+    ``usage_row``, ``bar_row`` and ``bar_h`` are offsets from a card's top; the
+    card tops themselves are ``content_top + index * card_h``.
+    """
+
+    font_px: int
+    text_h: int
+    rule_row: int
+    stamp_row: int
+    content_top: int
+    content_bottom: int
+    card_h: int
+    pad: int
+    usage_row: int
+    bar_row: int
+    bar_h: int
+
+    @property
+    def card_bottom_offset(self) -> int:
+        return self.bar_row + self.bar_h
+
+
+def _metrics(font) -> int:
+    """Line height this font actually produces, ascenders and descenders in."""
+    box = font.getbbox("AgjyQ")
+    return max(box[3] - box[1], 1) + 2
+
+
+def _open_font(path: str, size: int):
     from PIL import ImageFont
 
-    if font_path:
-        return ImageFont.truetype(font_path, TEXT_HEIGHT)
-    try:
-        return ImageFont.truetype("DejaVuSansMono.ttf", TEXT_HEIGHT)
-    except OSError:
-        try:
-            return ImageFont.load_default(size=TEXT_HEIGHT)
-        except TypeError:  # Pillow < 10.1 has no size argument
-            return ImageFont.load_default()
+    return ImageFont.truetype(path, size)
 
 
-def _clip(text: str, font, max_px: int, draw) -> str:
-    while text and draw.textlength(text, font=font) > max_px:
-        text = text[:-2]
-    return text
+def _first_existing(paths: Sequence[str]) -> str | None:
+    for path in paths:
+        if Path(path).exists():
+            return path
+    return None
 
 
-def _usage_line(item) -> str:
+def select_fonts(font_path: str | None = None) -> tuple[str, str | None]:
+    """Return (body font path, optional monospace path) or raise FontError."""
+    text = font_path or _first_existing(CJK_FONT_CANDIDATES)
+    if not text:
+        raise FontError(
+            "no CJK-capable font found. Set font_path in config.toml to a font that "
+            "covers your plan names, or install one of: "
+            + ", ".join(CJK_FONT_CANDIDATES)
+        )
+    return text, (None if font_path else _first_existing(MONO_FONT_CANDIDATES))
+
+
+def _content_box(stamp_h: int) -> tuple[int, int, int, int]:
+    rule_row = stamp_h + 2
+    stamp_row = SCREEN_HEIGHT - stamp_h - 1
+    return rule_row, stamp_row, rule_row + 4, stamp_row - 4
+
+
+CURRENCY_SYMBOLS = {"CNY": "¥", "RMB": "¥", "元": "¥", "USD": "$", "US$": "$", "$": "$"}
+
+
+def _balance_text(item) -> str:
+    """A bare number does not say whether it is yuan or dollars."""
+    amount = f"{item.balance // 100:,}.{item.balance % 100:02d}"
+    symbol = CURRENCY_SYMBOLS.get(item.unit.upper())
+    return f"{symbol}{amount}" if symbol else f"{amount} {item.unit}".strip()
+
+
+def usage_line(item) -> str:
+    """One readable line per item.  Quota and balance never crowd each other."""
     parts = []
     if item.quota_total:
-        parts.append(f"{item.quota_used} / {item.quota_total} {item.unit}".strip())
+        parts.append(f"{item.quota_used:,} / {item.quota_total:,} {item.unit}")
+    elif item.quota_used:
+        parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:
-        parts.append(f"${item.balance / 100:.2f}")
-    return "  ".join(parts) or f"{item.quota_used} {item.unit}".strip()
+        parts.append(_balance_text(item))
+    return "   ".join(parts) or "no data"
+
+
+def has_bar(item) -> bool:
+    """A bar only means something with a quota; an empty outline reads as 0%."""
+    return bool(item.quota_total)
+
+
+def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,
+         texts: Sequence[str] = (), usable_px: int = SCREEN_WIDTH - 2 * MARGIN_X):
+    """Lay out ``count`` cards, shrinking the body font until it fits.
+
+    "Fits" means both directions: name + usage + bar stacked inside the card
+    height, and every ``texts`` line inside the usable width.  Clipping a unit
+    off the end of a number is a worse outcome than a slightly smaller font, so
+    width is what caps a single item's size.
+
+    Each card keeps a bottom pad so neighbours never touch, and the slack left
+    over is split into two equal gaps.  That is what makes one item fill the
+    panel rather than sit at the top of it in larger text.
+    """
+    count = max(1, min(count, MAX_ITEMS))
+    rule_row, stamp_row, top, bottom = _content_box(_metrics(stamp_font))
+    card_h = (bottom - top) // count
+    pad = max(2, card_h // 10)
+    mono_path = mono_path or text_font_path
+
+    def rows(size: int) -> tuple[int, int, int, int]:
+        text_h = _metrics(_open_font(text_font_path, size))
+        bar_h = max(BAR_MIN_PX, card_h // 10)
+        usable = card_h - pad
+        gap = max(2, (usable - (text_h * 2 + bar_h)) // 2)
+        usage_row = text_h + gap
+        bar_row = usage_row + text_h + gap
+        return text_h, usage_row, bar_row, bar_h
+
+    def fits(size: int) -> bool:
+        digit_font = _open_font(mono_path, size)
+        if any(digit_font.getlength(text) > usable_px for text in texts):
+            return False
+        _text_h, _usage, bar_row, bar_h = rows(size)
+        return bar_row + bar_h <= card_h
+
+    font_px = max(MIN_FONT_PX, min(MAX_FONT_PX, card_h // 4))
+    while font_px > MIN_FONT_PX and not fits(font_px):
+        font_px -= 2
+
+    text_h, usage_row, bar_row, bar_h = rows(font_px)
+    layout = Layout(
+        font_px=font_px,
+        text_h=text_h,
+        rule_row=rule_row,
+        stamp_row=stamp_row,
+        content_top=top,
+        content_bottom=bottom,
+        card_h=card_h,
+        pad=pad,
+        usage_row=usage_row,
+        bar_row=bar_row,
+        bar_h=bar_h,
+    )
+    body = _open_font(text_font_path, font_px)
+    return layout, body, _open_font(mono_path, font_px)
+
+
+def fit(text: str, font, max_px: float, draw) -> str:
+    """Shorten text until it fits, marking that it was shortened."""
+    if not text or draw.textlength(text, font=font) <= max_px:
+        return text
+    while text and draw.textlength(text + "…", font=font) > max_px:
+        text = text[:-1]
+    return text + "…" if text else ""
 
 
 def compose(items: Sequence, title: str = "SUB MONITOR",
@@ -91,38 +239,43 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
     """Return the frame as a PIL ``L`` image: 0 = black ink, 255 = paper."""
     from PIL import Image, ImageDraw
 
+    text_font_path, mono_path = select_fonts(font_path)
     image = Image.new("L", (SCREEN_WIDTH, SCREEN_HEIGHT), 255)
     draw = ImageDraw.Draw(image)
-    font = _font(font_path)
-    ink = 0
 
-    draw.text(
-        ((SCREEN_WIDTH - draw.textlength(title, font=font)) // 2, TITLE_ROW),
-        title, font=font, fill=ink,
-    )
-    draw.line((0, RULE_ROW, SCREEN_WIDTH, RULE_ROW), fill=ink)
+    items = list(items)[:MAX_ITEMS]
+    usable = SCREEN_WIDTH - 2 * MARGIN_X
+    stamp_font = _open_font(mono_path or text_font_path, STAMP_FONT_PX)
+    layout, body, digits = plan(len(items) or 1, text_font_path, mono_path, stamp_font,
+                                texts=[usage_line(item) for item in items],
+                                usable_px=usable)
 
-    for index, item in enumerate(items[:MAX_ITEMS]):
-        base = ITEM0_ROW + index * ITEM_STRIDE
-        usable = SCREEN_WIDTH - 2 * MARGIN_X
-        draw.text((MARGIN_X, base + NAME_OFFSET),
-                  _clip(item.plan_name, font, usable, draw), font=font, fill=ink)
-        draw.text((MARGIN_X, base + USAGE_OFFSET),
-                  _clip(_usage_line(item), font, usable, draw), font=font, fill=ink)
+    draw.text(((SCREEN_WIDTH - draw.textlength(title, font=stamp_font)) // 2, 0),
+              title, font=stamp_font, fill=0)
+    draw.line((0, layout.rule_row, SCREEN_WIDTH, layout.rule_row), fill=0)
 
-        top = base + BAR_OFFSET
-        draw.rectangle((MARGIN_X, top, SCREEN_WIDTH - MARGIN_X, top + BAR_HEIGHT),
-                       outline=ink)
-        if item.quota_total:
-            filled = min(item.quota_used, item.quota_total)
-            width = (SCREEN_WIDTH - 2 * MARGIN_X - 2) * filled // item.quota_total
+    for index, item in enumerate(items):
+        top = layout.content_top + index * layout.card_h
+        draw.text((MARGIN_X, top), fit(item.plan_name, body, usable, draw),
+                  font=body, fill=0)
+        draw.text((MARGIN_X, top + layout.usage_row),
+                  fit(usage_line(item), digits, usable, draw), font=digits, fill=0)
+
+        if has_bar(item):
+            bar_top = top + layout.bar_row
+            bar_bottom = min(bar_top + layout.bar_h, top + layout.card_h - 1)
+            draw.rectangle((MARGIN_X, bar_top, SCREEN_WIDTH - MARGIN_X - 1, bar_bottom),
+                           outline=0)
+            inner = SCREEN_WIDTH - 2 * MARGIN_X - 2
+            filled = min(max(item.quota_used, 0), item.quota_total)
+            width = inner * filled // item.quota_total
             if width:
-                draw.rectangle((MARGIN_X + 1, top + 1, MARGIN_X + width,
-                                top + BAR_HEIGHT - 1), fill=ink)
+                draw.rectangle((MARGIN_X + 1, bar_top + 1, MARGIN_X + width,
+                                bar_bottom - 1), fill=0)
 
     stamp = updated if updated is not None else datetime.now().strftime("%m-%d %H:%M")
     if stamp:
-        draw.text((MARGIN_X, UPDATED_ROW), f"Updated: {stamp}", font=font, fill=ink)
+        draw.text((MARGIN_X, layout.stamp_row), f"Updated: {stamp}", font=stamp_font, fill=0)
     return image
 
 
@@ -204,8 +357,7 @@ def pattern(name: str, row: int = 123):
 def pack_planes(image, driver_id: int, planes: int = 1) -> list[Plane]:
     """Pack ``image`` into the planes ``driver_id`` expects, in stream order."""
     if driver_id not in DRIVER_PLANES:
-        raise ValueError(f"unknown driver id {driver_id}; "
-                         f"known: {sorted(DRIVER_PLANES)}")
+        raise ValueError(f"unknown driver id {driver_id}; known: {sorted(DRIVER_PLANES)}")
     if not 1 <= planes <= len(DRIVER_PLANES[driver_id]):
         raise ValueError(f"driver {driver_id} supports 1..{len(DRIVER_PLANES[driver_id])} planes")
 

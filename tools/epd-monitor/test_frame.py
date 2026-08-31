@@ -146,9 +146,9 @@ def test_packbits() -> None:
     check(len(truncated.decoded()) < render.PLANE_BYTES,
           "a truncated stream decodes short, which STREAM_END reports as a length mismatch")
 
-    check(len(encoded) < 2500, f"the demo frame encodes to {len(encoded)} bytes "
-                               f"({-(-len(encoded) // protocol.DATA_CHUNK)} packets), "
-                               f"within the 2500-byte budget")
+    check(len(encoded) * 4 < render.PLANE_BYTES,
+          f"the demo frame encodes to {len(encoded)} bytes ({-(-len(encoded) // protocol.DATA_CHUNK)} "
+          f"packets), still at least 4x smaller than {render.PLANE_BYTES} raw")
 
 
 def test_client_protocol() -> None:
@@ -254,6 +254,133 @@ def test_client_protocol() -> None:
           f"a half-sent plane comes back rejected (status {status})")
 
 
+def _layout_for(items):
+    text_font_path, mono_path = render.select_fonts()
+    stamp_font = render._open_font(mono_path or text_font_path, render.STAMP_FONT_PX)
+    layout, _body, _digits = render.plan(len(items), text_font_path, mono_path, stamp_font)
+    return layout
+
+
+def test_layout() -> None:
+    print("layout")
+    three = [Item("A", 10, 5, 0, "req")] * 3
+    one = [Item("A", 10, 5, 0, "req")]
+    layout3, layout1 = _layout_for(three), _layout_for(one)
+
+    check(layout3.usage_row + layout3.text_h <= layout3.bar_row,
+          "the usage text band ends before the progress bar band starts")
+    check(layout1.usage_row + layout1.text_h <= layout1.bar_row,
+          "and still does at the larger font a single item selects")
+    check(layout3.card_bottom_offset <= layout3.card_h,
+          "a card's content fits inside its own height")
+
+    for count, layout in ((1, layout1), (2, _layout_for([Item("A", 1, 1, 0, "u")] * 2)),
+                          (3, layout3)):
+        covered = count * layout.card_h + layout.content_top
+        gap = layout.content_bottom - covered
+        check(gap <= count,
+              f"{count} item(s) tile the content area (bottom gap {gap}px, was ~145px)")
+    check(layout1.font_px > layout3.font_px,
+          f"one item scales up ({layout1.font_px}px) where three stay compact "
+          f"({layout3.font_px}px)")
+
+    image = render.compose(one, updated="")
+    lower_half = image.crop((0, 160, render.SCREEN_WIDTH, 280)).getdata()
+    check(min(lower_half) == 0, "a single item actually inks the lower half of the panel")
+
+
+def test_bars() -> None:
+    print("progress bars")
+    layout = _layout_for([Item("A", 100, 50, 0, "req")])
+    half = render.compose([Item("A", 100, 50, 0, "req")], updated="")
+    bar_row = layout.content_top + layout.bar_row + layout.bar_h // 2
+    check(half.getpixel((render.MARGIN_X + 2, bar_row)) == 0, "a 50% bar inks from the left")
+    check(half.getpixel((render.SCREEN_WIDTH - render.MARGIN_X - 3, bar_row)) == 255,
+          "and stops at the fill, not the frame")
+
+    full = render.compose([Item("A", 100, 100, 0, "req")], updated="")
+    check(full.getpixel((render.SCREEN_WIDTH - render.MARGIN_X - 2, bar_row)) == 0,
+          "a 100% bar reaches the frame, so full reads as full")
+
+    no_quota = render.compose([Item("Kimi", 0, 0, 8800, "CNY")], updated="")
+    band = no_quota.crop((0, layout.content_top + layout.bar_row,
+                          render.SCREEN_WIDTH, layout.content_top + layout.bar_row
+                          + layout.bar_h + 1)).getdata()
+    check(min(band) == 255, "an item with no quota draws no bar at all (an empty frame reads 0%)")
+
+
+def test_text_formatting() -> None:
+    print("text formatting")
+    from PIL import Image, ImageDraw
+
+    draw = ImageDraw.Draw(Image.new("L", (10, 10)))
+    path, _mono = render.select_fonts()
+    font = render._open_font(path, 20)
+
+    long_name = "GitHub Copilot Business"
+    clipped = render.fit(long_name, font, 120, draw)
+    check(clipped.endswith("…") and clipped != long_name,
+          f"truncation is marked, not silent: {clipped!r}")
+    check(draw.textlength(clipped, font=font) <= 120, "and the clipped text still fits")
+    check(render.fit("Short", font, 120, draw) == "Short", "text that fits is untouched")
+
+    check(render.usage_line(Item("DeepSeek", 2_000_000, 1_234_567, 0, "tkn"))
+          == "1,234,567 / 2,000,000 tkn", "large quotas are grouped for reading")
+    check(render.usage_line(Item("Kimi", 0, 0, 1234, "CNY")) == "¥12.34",
+          "a balance-only item shows the balance, not '0 / 0'")
+    check(render.usage_line(Item("Empty", 0, 0, 0, "req")) == "no data",
+          "an item with nothing to say says so")
+
+
+def test_font_selection() -> None:
+    print("fonts")
+    path, mono = render.select_fonts()
+    check(Path(path).exists() and path in render.CJK_FONT_CANDIDATES,
+          f"body font is a known CJK face: {path}")
+    check(mono is None or Path(mono).exists(), f"tabular digits: {mono or 'unavailable'}")
+
+    saved = render.CJK_FONT_CANDIDATES, render.MONO_FONT_CANDIDATES
+    render.CJK_FONT_CANDIDATES = ()
+    render.MONO_FONT_CANDIDATES = ()
+    try:
+        render.select_fonts()
+        check(False, "missing CJK fonts raise instead of drawing tofu")
+    except render.FontError:
+        check(True, "missing CJK fonts raise instead of drawing tofu")
+    finally:
+        render.CJK_FONT_CANDIDATES, render.MONO_FONT_CANDIDATES = saved
+
+    image = render.compose([Item("智谱清言", 600, 588, 0, "次")], updated="")
+    layout = _layout_for([Item("智谱清言", 600, 588, 0, "次")])
+    band = image.crop((render.MARGIN_X, layout.content_top, 220,
+                       layout.content_top + layout.text_h))
+    check(min(band.getdata()) == 0, "a Chinese plan name renders ink rather than blanks")
+
+
+def test_width_aware_font() -> None:
+    print("width-aware font")
+    item = Item("OpenAI", 5_000_000, 4_210_000, 123450, "USD")
+    text = render.usage_line(item)
+    path, mono = render.select_fonts()
+    stamp = render._open_font(mono or path, render.STAMP_FONT_PX)
+    usable = render.SCREEN_WIDTH - 2 * render.MARGIN_X
+    layout, _body, digits = render.plan(1, path, mono, stamp, texts=[text])
+
+    check(layout.font_px < render.MAX_FONT_PX,
+          f"a long value shrank the font from {render.MAX_FONT_PX} to {layout.font_px}px")
+    check(digits.getlength(text) <= usable, f"so the whole line fits unclipped: {text!r}")
+
+    image = render.compose([item], updated="")
+    margin = image.crop((usable + render.MARGIN_X, layout.content_top,
+                         render.SCREEN_WIDTH, layout.content_top + layout.card_h))
+    check(min(margin.getdata()) == 255, "nothing is drawn into the right margin")
+
+    check(render.usage_line(Item("OpenAI", 5000, 4210, 1250, "USD"))
+          == "4,210 / 5,000 USD   $12.50", "a balance keeps its currency symbol")
+    check(render.usage_line(Item("Kimi", 0, 0, 1234, "CNY")) == "¥12.34",
+          "and a balance-only item says which money it is")
+
+
 def test_composition() -> None:
     print("composition")
     items = [Item("Copilot Pro", 1500, 375, 0, "req"),
@@ -261,19 +388,14 @@ def test_composition() -> None:
              Item("DeepSeek", 2_000_000, 1_234_567, 0, "tkn"),
              Item("Fourth", 10, 1, 0, "req")]
     image = render.compose(items, updated="08-29 10:30")
+    layout = _layout_for(items[:3])
 
     check(image.size == (render.SCREEN_WIDTH, render.SCREEN_HEIGHT), "frame is 400x300")
-    check(len(items) == 4 and image.getpixel((0, render.RULE_ROW)) == 0,
-          "the title rule is drawn across the full width")
-    check(render.ITEM0_ROW + 3 * render.ITEM_STRIDE < render.UPDATED_ROW,
-          "three item slots fit above the timestamp, so the fourth is dropped, not overlapped")
-
-    bar_row = render.ITEM0_ROW + render.BAR_OFFSET + 2
-    check(image.getpixel((render.MARGIN_X + 2, bar_row)) == 0
-          and image.getpixel((render.SCREEN_WIDTH - render.MARGIN_X - 3, bar_row)) == 255,
-          "a 25% bar fills from the left only")
-    check(image.getpixel((0, render.UPDATED_ROW + 8)) == 255,
+    check(image.getpixel((0, layout.rule_row)) == 0, "the title rule spans the width")
+    check(image.getpixel((0, layout.stamp_row + 8)) == 255,
           "the left margin beside the timestamp stays paper white")
+    check(render.MAX_ITEMS == 3 and len(items) == 4,
+          "a fourth item is dropped, not drawn over the timestamp")
 
 
 def test_planes() -> None:
@@ -374,7 +496,9 @@ def test_firmware_parity() -> None:
 
 def main() -> int:
     for test in (test_geometry, test_packing, test_checksum, test_chunking, test_packbits,
-                 test_client_protocol, test_composition, test_planes, test_firmware_parity):
+                 test_client_protocol, test_layout, test_bars, test_text_formatting,
+                 test_font_selection, test_width_aware_font, test_composition,
+                 test_planes, test_firmware_parity):
         test()
     print("\nall checks passed")
     return 0

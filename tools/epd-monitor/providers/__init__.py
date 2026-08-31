@@ -9,19 +9,17 @@ from typing import ClassVar
 
 @dataclass
 class SubscriptionItem:
-    """One item to display on the EPD screen (maps to subscription_item_t)."""
+    """One item to show on the EPD screen.
 
-    plan_name: str      # ≤ 15 chars (leave room for NUL byte)
+    Width is the renderer's problem: anything too long is clipped and marked
+    there, so names and units arrive as the provider reported them.
+    """
+
+    plan_name: str
     quota_total: int    # Total quota (tokens, requests, …); 0 if N/A
     quota_used: int     # Used quota; 0 if N/A
     balance: int        # Balance × 100 (integer cents/fen); 0 if N/A
-    unit: str           # ≤ 3 chars: "req", "tkn", "CNY", "USD"
-
-    def __post_init__(self) -> None:
-        if len(self.plan_name.encode()) > 15:
-            self.plan_name = self.plan_name[:15]
-        if len(self.unit.encode()) > 3:
-            self.unit = self.unit[:3]
+    unit: str           # "req", "tkn", "CNY", …
 
 
 class ProviderBase(ABC):
