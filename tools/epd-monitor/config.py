@@ -41,10 +41,12 @@ def defaults() -> dict[str, Any]:
     return dict(_DEFAULTS)
 
 
-def load(path: str | Path) -> dict[str, Any]:
+def load(path: str | Path, *, require_providers: bool = True) -> dict[str, Any]:
     """Load and validate config from *path*.
 
     Returns a dict with top-level settings and a ``providers`` list.
+    ``require_providers`` is off for the commands that only talk to the device
+    and never fetch data - scanning, describing, patterns, fault injection.
     """
     p = Path(path)
     if not p.exists():
@@ -57,7 +59,9 @@ def load(path: str | Path) -> dict[str, Any]:
 
     providers: list[dict[str, Any]] = raw.get("providers", [])
     if not providers:
-        raise ValueError("Config must define at least one [[providers]] entry")
+        if require_providers:
+            raise ValueError("Config must define at least one [[providers]] entry")
+        return cfg
 
     for i, prov in enumerate(providers):
         if "type" not in prov:

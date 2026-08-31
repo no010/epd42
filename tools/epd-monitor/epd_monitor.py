@@ -143,14 +143,17 @@ async def cmd_daemon(cfg: dict, no_ble: bool, demo: bool) -> None:
 async def cmd_scan(scan_timeout: float) -> None:
     from bleak import BleakScanner
     print(f"Scanning for BLE devices ({scan_timeout:.0f}s)…\n")
-    devices = await BleakScanner.discover(timeout=scan_timeout)
-    if not devices:
+    # bleak 3.x moved RSSI off BLEDevice and onto AdvertisementData.
+    found = await BleakScanner.discover(timeout=scan_timeout, return_adv=True)
+    if not found:
         print("No devices found.")
         return
     print(f"{'Address':<20}  {'RSSI':>5}  Name")
     print("─" * 60)
-    for d in sorted(devices, key=lambda x: x.rssi or -999, reverse=True):
-        print(f"{d.address:<20}  {d.rssi or '?':>5}  {d.name or '(unknown)'}")
+    for device, adv in sorted(found.values(), key=lambda pair: pair[1].rssi, reverse=True):
+        name = adv.local_name or device.name or "(unknown)"
+        print(f"{device.address:<20}  {adv.rssi:>5}  {name}"
+              + ("  <-- EPD42" if name.startswith("NRF_EPD") else ""))
 
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -214,7 +217,7 @@ def main() -> int:
     elif args.command in _BLE_OR_OPTIONAL_CONFIG:
         if Path(args.config).exists():
             try:
-                cfg = cfg_module.load(args.config)
+                cfg = cfg_module.load(args.config, require_providers=False)
             except (ValueError, KeyError) as exc:
                 print(f"Config error: {exc}", file=sys.stderr)
                 return 1

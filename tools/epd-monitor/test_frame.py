@@ -151,6 +151,109 @@ def test_packbits() -> None:
                                f"within the 2500-byte budget")
 
 
+def test_client_protocol() -> None:
+    """Drive EpdLink against a fake GATT client: protocol logic, no radio."""
+    try:
+        import ble_client
+    except ImportError as exc:
+        print(f"  skip  ble_client needs the project env (run `uv sync`): {exc}")
+        return
+
+    import asyncio
+
+    class FakeGatt:
+        """Stands in for BleakClient and answers with the firmware's acks.
+
+        STREAM_DATA is fed through the same PackbitsDecoder the device runs, so
+        this exercises encoder and decoder together through the real send path.
+        """
+
+        def __init__(self, driver_id: int = 2) -> None:
+            self.writes: list[bytes] = []
+            self.acks: asyncio.Queue = asyncio.Queue()
+            self.driver_id = driver_id
+            self.rle = protocol.PackbitsDecoder()
+            self.plane_bytes = render.PLANE_BYTES
+
+        async def write_gatt_char(self, _char, data, response=True):
+            data = bytes(data)
+            self.writes.append(data)
+            cmd, payload = data[0], data[1:]
+
+            if cmd == protocol.CMD_GET_STATUS:
+                ack = (bytes([cmd, 0, 0xFF, 0, 0])
+                       + self.plane_bytes.to_bytes(2, "little") + bytes([self.driver_id]))
+            elif cmd == protocol.CMD_STREAM_BEGIN:
+                self.rle = protocol.PackbitsDecoder()
+                ack = bytes([cmd, 0, payload[0]]) + self.plane_bytes.to_bytes(2, "little")
+            elif cmd == protocol.CMD_STREAM_DATA:
+                self.rle.feed(payload)                  # no ack for DATA, ever
+                return
+            elif cmd == protocol.CMD_STREAM_END:
+                decoded = self.rle.decoded()
+                ok = (int.from_bytes(payload[0:2], "little") == len(decoded)
+                      and int.from_bytes(payload[2:6], "little") == render.checksum(decoded))
+                ack = (bytes([cmd, 0 if ok else 0x03])
+                       + len(decoded).to_bytes(2, "little")
+                       + render.checksum(decoded).to_bytes(4, "little"))
+            else:
+                return
+            self.acks.put_nowait(ack)
+
+    def link_on(fake: FakeGatt) -> ble_client.EpdLink:
+        return ble_client.EpdLink(fake, "char", fake.acks)
+
+    plane = demo_plane()
+
+    fake = FakeGatt()
+    link = link_on(fake)
+    asyncio.run(link.query_status())
+    check(fake.writes[0] == bytes([protocol.CMD_GET_STATUS]), "GET_STATUS is a bare command")
+    check(link.driver_id == 2 and link.plane_bytes == render.PLANE_BYTES,
+          "the status reply is parsed into driver id and plane size")
+
+    fake = FakeGatt()
+    fake.acks.put_nowait(b"\x0a\x0b\x0c\x0d\x0e\x0f\x10\x02\x09\x03\x01")  # config on subscribe
+    asyncio.run(link_on(fake).stream_plane(0, plane, last=True))
+    check(fake.writes[0] == bytes([protocol.CMD_STREAM_BEGIN, 0]),
+          "the unsolicited config notification is not mistaken for a BEGIN ack")
+
+    data = [w for w in fake.writes if w[0] == protocol.CMD_STREAM_DATA]
+    check(all(len(w) <= 20 for w in data), "no DATA write exceeds the 20-byte attribute")
+    check(fake.writes[-1][0] == protocol.CMD_STREAM_END, "the plane ends with END")
+    end = fake.writes[-1]
+    check(int.from_bytes(end[1:3], "little") == render.PLANE_BYTES
+          and int.from_bytes(end[3:7], "little") == render.checksum(plane),
+          "END declares the raw plane's length and sum, not the encoded ones")
+    check(end[7] == protocol.FLAG_REFRESH | protocol.FLAG_SLEEP,
+          "the last plane carries refresh and sleep")
+
+    fake = FakeGatt()
+    asyncio.run(link_on(fake).stream_plane(0, plane, last=False))
+    check(fake.writes[-1][7] == 0, "a mid-frame plane carries no flags, so nothing refreshes yet")
+
+    fake = FakeGatt()
+    link = link_on(fake)
+    original = fake.write_gatt_char
+
+    async def drop_one(char, data, response=True):
+        if data[0] == protocol.CMD_STREAM_DATA and len(fake.writes) == 5:
+            return                              # lose a packet in flight
+        await original(char, data, response)
+
+    fake.write_gatt_char = drop_one
+    try:
+        asyncio.run(link.stream_plane(0, plane, last=True))
+        check(False, "a dropped DATA packet surfaces as a failure")
+    except ble_client.EpdError:
+        check(True, "a dropped DATA packet surfaces as a failure, and the device never refreshed")
+
+    fake = FakeGatt()
+    status = asyncio.run(link_on(fake).stream_truncated(0, plane, 0.5))
+    check(status != protocol.STATUS_OK,
+          f"a half-sent plane comes back rejected (status {status})")
+
+
 def test_composition() -> None:
     print("composition")
     items = [Item("Copilot Pro", 1500, 375, 0, "req"),
@@ -271,7 +374,7 @@ def test_firmware_parity() -> None:
 
 def main() -> int:
     for test in (test_geometry, test_packing, test_checksum, test_chunking, test_packbits,
-                 test_composition, test_planes, test_firmware_parity):
+                 test_client_protocol, test_composition, test_planes, test_firmware_parity):
         test()
     print("\nall checks passed")
     return 0

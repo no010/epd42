@@ -6,34 +6,37 @@ Periodically fetches usage / balance from AI providers (Kimi, DeepSeek, Zhipu, O
 
 ## Requirements
 
-- Python 3.10+
+- [uv](https://docs.astral.sh/uv/) — it provisions Python 3.10+ itself
 - Bluetooth LE adapter
 
 ## Installation
 
+Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`. There is
+no `requirements.txt`.
+
 ```bash
 cd tools/epd-monitor
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Copy and fill in the config
+# 1. Copy and fill in the config (config.toml is gitignored: it holds API keys)
 cp config.example.toml config.toml
-$EDITOR config.toml           # add your API keys
+$EDITOR config.toml       # add your API keys; set device_address to skip the 15 s scan
 
 # 2. Check what data will be fetched (no BLE)
-python epd_monitor.py status
+uv run python epd_monitor.py status
 
 # 3. See the frame before sending it (no BLE, no API keys)
-python epd_monitor.py render --demo
+uv run python epd_monitor.py render --demo
 
 # 4. Push to the device once
-python epd_monitor.py push
+uv run python epd_monitor.py push
 
 # 5. Run as a daemon (loops at refresh_interval)
-python epd_monitor.py daemon
+uv run python epd_monitor.py daemon
 ```
 
 ## Commands
@@ -63,7 +66,7 @@ of that looks like a polarity bug.
 packing and the protocol constants against the firmware sources:
 
 ```bash
-python test_frame.py
+uv run python test_frame.py
 ```
 
 ## Protocol
@@ -183,8 +186,8 @@ needs the wakeup pin or an NFC field.
 
 | Symptom | Fix |
 |---------|-----|
-| Device not found | Run `python epd_monitor.py scan`; the firmware advertises `NRF_EPD_xxxx`. Set `device_address` to skip scanning |
-| `no EPD characteristic found` | Run `python epd_monitor.py describe` and compare the service UUID against `EPD_SERVICE_UUID` in `protocol.py` |
+| Device not found | Run `uv run python epd_monitor.py scan`; the firmware advertises `NRF_EPD_xxxx`. Set `device_address` to skip scanning |
+| `no EPD characteristic found` | Run `uv run python epd_monitor.py describe` and compare the service UUID against `EPD_SERVICE_UUID` in `protocol.py` |
 | `no ack for command 0xb0` | The client could not subscribe to notifications, or the device reset mid-transfer. Reconnect |
 | `STREAM_END: verify failed` | Packets were lost. Lower the connection interval, or stop using `fast_write` |
 | `panel busy timeout` | The panel never released BUSY: check the wiring and that `busy_pin` is mapped correctly |

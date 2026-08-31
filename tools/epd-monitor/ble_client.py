@@ -105,7 +105,8 @@ class EpdLink:
         self._check_status(await self._await_ack(protocol.CMD_STREAM_END), "STREAM_END")
         logger.info("plane %d: %d -> %d bytes (%.0f%%) in %.1fs, %d packets, %.1f kB/s",
                     index, len(raw), len(encoded), 100.0 * len(encoded) / len(raw),
-                    -(-len(encoded) // protocol.DATA_CHUNK), len(encoded) / elapsed / 1024)
+                    elapsed, -(-len(encoded) // protocol.DATA_CHUNK),
+                    len(encoded) / elapsed / 1024)
 
     async def _begin(self, index: int) -> None:
         await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
@@ -152,14 +153,21 @@ async def _find_device(cfg: dict):
         return address
     name = cfg.get("device_name", "NRF_EPD")
     timeout = float(cfg.get("scan_timeout", 15))
-    logger.info("scanning for '%s' (%.0fs)…", name, timeout)
-    device = await BleakScanner.find_device_by_name(name, timeout=timeout)
-    if device is None:
+    logger.info("scanning for '%s*' (%.0fs)…", name, timeout)
+    # The firmware advertises "NRF_EPD_<last two MAC bytes>", so accept prefix
+    # matches as well as exact ones and take the strongest signal in range.
+    found = await BleakScanner.discover(timeout=timeout, return_adv=True)
+    matches = [
+        (adv.rssi, device) for device, adv in found.values()
+        if (adv.local_name or device.name or "").startswith(name)
+    ]
+    if not matches:
         raise EpdError(
-            f"device '{name}' not found. The firmware advertises "
-            "NRF_EPD_<mac suffix> (see DEVICE_NAME in main.c) - set device_name "
-            "or device_address in config.toml."
+            f"no device advertising as '{name}…'. Run 'epd_monitor.py scan' to see "
+            "what is in range, then set device_name or device_address in config.toml."
         )
+    rssi, device = max(matches, key=lambda item: item[0])
+    logger.info("found %s at %s (%d dBm)", device.name, device.address, rssi)
     return device
 
 
