@@ -171,8 +171,10 @@ static uint32_t epd_config_save(epd_config_t *cfg)
     return fs_store(&fs_config, fs_config.p_start_addr, (uint32_t *) cfg, len, NULL);
 }
 
-/** Packed-bit streaming: panel refresh can take seconds on the tri-colour board. */
-#define EPD_STREAM_REFRESH_TIMEOUT_MS  5000
+/** Packed-bit streaming. The refresh deadline is a wedge guard, not a
+ *  performance target: a UC8176 full update measured under 5 s on one push and
+ *  over it on the next, so bound well clear of the slowest legitimate refresh. */
+#define EPD_STREAM_REFRESH_TIMEOUT_MS  20000
 #define EPD_STREAM_PLANE_IDLE          0xFF
 
 /** PackBits decoder states. */
