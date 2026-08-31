@@ -94,8 +94,7 @@ class EpdLink:
         flags = (protocol.FLAG_REFRESH | protocol.FLAG_SLEEP) if last else 0
         encoded = protocol.packbits_encode(raw)
 
-        await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
-        self._check_status(await self._await_ack(protocol.CMD_STREAM_BEGIN), "STREAM_BEGIN")
+        await self._begin(index)
 
         started = time.monotonic()
         for packet in protocol.iter_chunks(encoded):
@@ -107,6 +106,30 @@ class EpdLink:
         logger.info("plane %d: %d -> %d bytes (%.0f%%) in %.1fs, %d packets, %.1f kB/s",
                     index, len(raw), len(encoded), 100.0 * len(encoded) / len(raw),
                     -(-len(encoded) // protocol.DATA_CHUNK), len(encoded) / elapsed / 1024)
+
+    async def _begin(self, index: int) -> None:
+        await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
+        self._check_status(await self._await_ack(protocol.CMD_STREAM_BEGIN), "STREAM_BEGIN")
+
+    async def stream_truncated(self, index: int, raw: bytes, fraction: float) -> int:
+        """Send ``fraction`` of a plane, then END as if it were whole.
+
+        Returns the device status rather than raising: the point is to confirm
+        the device refuses to refresh a plane it cannot verify.
+        """
+        encoded = protocol.packbits_encode(raw)
+        keep = max(1, int(len(encoded) * fraction))
+        await self._begin(index)
+        for packet in protocol.iter_chunks(encoded[:keep]):
+            await self._write(packet)
+        await self._write(protocol.end_request(raw, protocol.FLAG_REFRESH | protocol.FLAG_SLEEP))
+        packet = await self._await_ack(protocol.CMD_STREAM_END)
+        return packet[1]
+
+    async def set_driver(self, driver_id: int) -> None:
+        """Switch the panel driver the device stores in its config page."""
+        await self._write(bytes([protocol.CMD_INIT, driver_id]))
+        await self.query_status()
 
     async def abort(self) -> None:
         try:
@@ -177,12 +200,8 @@ async def epd_session(cfg: dict):
         yield link
 
 
-async def push_frame(items: Sequence[SubscriptionItem], cfg: dict, *,
-                     fast: bool = False, title: str = "SUB MONITOR",
-                     font_path: str | None = None) -> None:
-    """Compose ``items`` into a frame and stream it to the device."""
-    image = render.compose(items, title=title, font_path=font_path)
-
+async def push_image(image, cfg: dict, *, fast: bool = False) -> None:
+    """Pack ``image`` for the panel the device reports, and stream it."""
     async with epd_session(cfg) as link:
         if link.plane_bytes != render.PLANE_BYTES:
             raise EpdError(f"device plane is {link.plane_bytes} bytes, renderer "
@@ -202,6 +221,51 @@ async def push_frame(items: Sequence[SubscriptionItem], cfg: dict, *,
         await link.sleep()
 
     logger.info("frame pushed")
+
+
+async def push_frame(items: Sequence[SubscriptionItem], cfg: dict, *,
+                     fast: bool = False, title: str = "SUB MONITOR",
+                     font_path: str | None = None) -> None:
+    """Compose ``items`` into a frame and stream it to the device."""
+    await push_image(render.compose(items, title=title, font_path=font_path),
+                     cfg, fast=fast)
+
+
+async def push_pattern(name: str, cfg: dict, *, row: int = 123,
+                       fast: bool = False) -> None:
+    """Stream a synthetic pattern; see ``render.pattern`` for what each proves."""
+    await push_image(render.pattern(name, row=row), cfg, fast=fast)
+
+
+async def select_driver(driver_id: int, cfg: dict) -> None:
+    """Point the device at the panel actually attached, and report the new id."""
+    if driver_id not in render.DRIVER_PLANES:
+        raise EpdError(f"unknown driver id {driver_id}; known: {sorted(render.DRIVER_PLANES)}")
+    async with epd_session(cfg) as link:
+        await link.set_driver(driver_id)
+        print(f"driver is now {link.driver_id}: {render.DRIVER_NAMES.get(link.driver_id)}")
+
+
+async def fault_test(cfg: dict, fraction: float = 0.5) -> int:
+    """Half-send a plane, END as if complete, and check the device refuses it.
+
+    Returns a process exit code: the plane must be rejected, and the frame
+    pushed afterwards must still land, which is what proves the recovery path
+    re-initialises the panel instead of continuing a half-written one.
+    """
+    plane = render.pack_plane(render.pattern("black"))
+    async with epd_session(cfg) as link:
+        status = await link.stream_truncated(0, plane, fraction)
+        print(f"truncated plane ({fraction:.0%}) -> status {status} "
+              f"({protocol.describe_status(status)})")
+        rejected = status != protocol.STATUS_OK
+        print("  screen must NOT have changed:", "expected" if rejected else "PROBLEM")
+
+    # A rejected plane already reset the device's stream state, so this frame
+    # exercises the automatic re-Init path.
+    await push_pattern("white", cfg)
+    print("recovery frame pushed; the panel should now be all paper")
+    return 0 if rejected else 1
 
 
 async def describe(cfg: dict) -> None:

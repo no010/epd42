@@ -12,6 +12,7 @@ from render import checksum
 # The characteristic is 62750002-d828-918d-fb46-b6c11c675aec.
 EPD_SERVICE_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
 
+CMD_INIT = 0x01             # EPD_CMD_INIT, with a driver id payload
 CMD_SLEEP = 0x06            # EPD_CMD_SLEEP
 CMD_STREAM_BEGIN = 0xB0
 CMD_STREAM_DATA = 0xB1

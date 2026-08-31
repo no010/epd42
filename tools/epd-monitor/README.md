@@ -46,6 +46,18 @@ python epd_monitor.py daemon
 | `daemon`   | Loop forever, push on `refresh_interval` |
 | `scan`     | Scan for nearby BLE devices (to find your device address) |
 | `describe` | Print the device's GATT services and characteristics |
+| `pattern`  | Stream a synthetic test image (`white`, `black`, `corner-dots`, `row-marker`, `left-half`, `grid`) |
+| `setdriver`| Point the device at the panel actually attached (`--driver 1|2|3`) |
+| `fault`    | Send half a plane and END early: the device must refuse it, then recover |
+
+Bring-up order on fresh hardware: `scan` → `describe` → `setdriver` →
+`pattern --name white` → `pattern --name corner-dots` →
+`pattern --name row-marker` → `push --demo`. A composed UI cannot tell you
+*which* of polarity, bit order, row order or plane addressing is wrong - it just
+looks like a wrong picture - so each pattern answers one of those questions (see
+`render.pattern`). `setdriver` matters because the panel physically attached and
+the driver id stored in the device's config page can disagree, and every symptom
+of that looks like a polarity bug.
 
 `render --demo` needs no config file and no API keys, and `test_frame.py` checks the
 packing and the protocol constants against the firmware sources:

@@ -156,6 +156,9 @@ async def cmd_scan(scan_timeout: float) -> None:
 # ── main ────────────────────────────────────────────────────────────────────
 
 _NEEDS_CONFIG = {"push", "daemon", "status", "render"}
+# These talk to the device or draw synthetic frames: config is welcome (device
+# name, address) but never required.
+_BLE_OR_OPTIONAL_CONFIG = {"scan", "describe", "render", "pattern", "setdriver", "fault"}
 
 
 def main() -> int:
@@ -165,7 +168,8 @@ def main() -> int:
     )
     parser.add_argument(
         "command",
-        choices=["push", "daemon", "status", "render", "scan", "describe"],
+        choices=["push", "daemon", "status", "render", "scan", "describe",
+                 "pattern", "setdriver", "fault"],
         help="Command to run",
     )
     parser.add_argument(
@@ -182,7 +186,13 @@ def main() -> int:
     parser.add_argument("--preview", type=Path, default=Path("preview.png"),
                         help="render: where to write the PNG of the composed frame")
     parser.add_argument("--driver", type=int, default=2, choices=sorted(render.DRIVER_PLANES),
-                        help="render: driver id to pack for (1, 2 = BW; 3 = BWR)")
+                        help="render/setdriver: driver id (1 = 4.2in, 2 = 4.2in V2 BW, 3 = BWR)")
+    parser.add_argument("--name", default="white", choices=render.PATTERNS,
+                        help="pattern: which test image to stream")
+    parser.add_argument("--row", type=int, default=123,
+                        help="pattern row-marker: which row to draw (0-299)")
+    parser.add_argument("--fraction", type=float, default=0.5,
+                        help="fault: how much of the plane to send before ENDing early")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
@@ -201,7 +211,7 @@ def main() -> int:
         except (ValueError, KeyError) as exc:
             print(f"Config error: {exc}", file=sys.stderr)
             return 1
-    elif args.command in ("scan", "describe", "render"):
+    elif args.command in _BLE_OR_OPTIONAL_CONFIG:
         if Path(args.config).exists():
             try:
                 cfg = cfg_module.load(args.config)
@@ -213,6 +223,7 @@ def main() -> int:
 
     log_level = "DEBUG" if args.verbose else cfg.get("log_level", "INFO")
     _setup_logging(log_level)
+    fast = bool(cfg.get("fast_write"))
 
     try:
         if args.command == "push":
@@ -229,6 +240,18 @@ def main() -> int:
             from ble_client import describe as ble_describe
 
             asyncio.run(ble_describe(cfg))
+        elif args.command == "pattern":
+            from ble_client import push_pattern
+
+            asyncio.run(push_pattern(args.name, cfg, row=args.row, fast=fast))
+        elif args.command == "setdriver":
+            from ble_client import select_driver
+
+            asyncio.run(select_driver(args.driver, cfg))
+        elif args.command == "fault":
+            from ble_client import fault_test
+
+            return asyncio.run(fault_test(cfg, fraction=args.fraction))
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except RuntimeError as exc:

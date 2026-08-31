@@ -149,6 +149,58 @@ def blank_plane() -> bytes:
     return bytes([0xFF]) * PLANE_BYTES
 
 
+# Each pattern answers one question; a wrong UI would only look "wrong".
+PATTERNS = ("white", "black", "corner-dots", "row-marker", "left-half", "grid")
+
+
+def pattern(name: str, row: int = 123):
+    """Return a synthetic 400x300 ``L`` image for bring-up on real hardware.
+
+    white / black     polarity: an inverted result means the wire convention
+                      (1 = white) and the panel disagree.
+    corner-dots       bit order: four single pixels at the extremes plus one at
+                      (3, 1).  If that last one lands at x = 4, MSB-first is wrong.
+    row-marker        row addressing: one solid row at ``row``.  If it shows up
+                      elsewhere, the RAM cursor or window is off.
+    left-half         scan direction: left must be ink, right paper.
+    grid              scaling and byte alignment: lines every 25 px, which is a
+                      whole number of bytes in x.
+    """
+    from PIL import Image
+
+    if name not in PATTERNS:
+        raise ValueError(f"unknown pattern {name!r}; known: {PATTERNS}")
+
+    if name == "white":
+        return Image.new("L", (SCREEN_WIDTH, SCREEN_HEIGHT), 255)
+    if name == "black":
+        return Image.new("L", (SCREEN_WIDTH, SCREEN_HEIGHT), 0)
+
+    image = Image.new("L", (SCREEN_WIDTH, SCREEN_HEIGHT), 255)
+    last_x, last_y = SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1
+
+    if name == "corner-dots":
+        for x, y in ((0, 0), (last_x, 0), (0, last_y), (last_x, last_y), (3, 1)):
+            image.putpixel((x, y), 0)
+    elif name == "row-marker":
+        if not 0 <= row < SCREEN_HEIGHT:
+            raise ValueError(f"row {row} is off the panel")
+        for x in range(SCREEN_WIDTH):
+            image.putpixel((x, row), 0)
+    elif name == "left-half":
+        for y in range(SCREEN_HEIGHT):
+            for x in range(SCREEN_WIDTH // 2):
+                image.putpixel((x, y), 0)
+    elif name == "grid":
+        for y in range(0, SCREEN_HEIGHT, 25):
+            for x in range(SCREEN_WIDTH):
+                image.putpixel((x, y), 0)
+        for x in range(0, SCREEN_WIDTH, 25):
+            for y in range(SCREEN_HEIGHT):
+                image.putpixel((x, y), 0)
+    return image
+
+
 def pack_planes(image, driver_id: int, planes: int = 1) -> list[Plane]:
     """Pack ``image`` into the planes ``driver_id`` expects, in stream order."""
     if driver_id not in DRIVER_PLANES:
