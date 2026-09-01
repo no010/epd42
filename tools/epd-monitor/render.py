@@ -86,8 +86,8 @@ class Plane:
 class Layout:
     """Measured geometry for one frame, derived from item count and fonts.
 
-    ``usage_row``, ``bar_row`` and ``bar_h`` are offsets from a card's top; the
-    card tops themselves are ``content_top + index * card_h``.
+    ``usage_row``, ``note_row``, ``bar_row`` and ``bar_h`` are offsets from a
+    card's top; the card tops themselves are ``content_top + index * card_h``.
     """
 
     font_px: int
@@ -99,6 +99,8 @@ class Layout:
     card_h: int
     pad: int
     usage_row: int
+    note_row: int
+    note_h: int
     bar_row: int
     bar_h: int
 
@@ -155,7 +157,7 @@ def _balance_text(item) -> str:
 
 
 def usage_line(item) -> str:
-    """One readable line per item.  Quota and balance never crowd each other."""
+    """The card's metrics line: quota and balance, no notes."""
     parts = []
     if item.quota_total:
         if item.unit == "%":
@@ -166,9 +168,34 @@ def usage_line(item) -> str:
         parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:
         parts.append(_balance_text(item))
-    if getattr(item, "note", ""):
-        parts.append(item.note)
     return "   ".join(parts) or "no data"
+
+
+def _split_runs(text: str) -> list[tuple[bool, str]]:
+    """Split into consecutive (is_ascii, run) pairs.
+
+    The metrics line is drawn in the tabular font, which has no CJK glyphs -
+    Chinese in it rendered as tofu boxes - so runs alternate between the two
+    fonts.
+    """
+    runs: list[tuple[bool, str]] = []
+    for ch in text:
+        ascii_run = ord(ch) < 128
+        if runs and runs[-1][0] == ascii_run:
+            runs[-1] = (ascii_run, runs[-1][1] + ch)
+        else:
+            runs.append((ascii_run, ch))
+    return runs
+
+
+def draw_mixed(draw, xy: tuple[int, int], text: str, ascii_font, cjk_font, fill) -> None:
+    """Draw ``text`` at xy, using the tabular font for ASCII runs and the CJK
+    font for everything else."""
+    x, y = xy
+    for ascii_run, run in _split_runs(text):
+        font = ascii_font if ascii_run else cjk_font
+        draw.text((int(x), y), run, font=font, fill=fill)
+        x += draw.textlength(run, font=font)
 
 
 def has_bar(item) -> bool:
@@ -197,25 +224,28 @@ def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,
 
     def rows(size: int) -> tuple[int, int, int, int]:
         text_h = _metrics(_open_font(text_font_path, size))
+        note_h = _metrics(stamp_font)
         bar_h = max(BAR_MIN_PX, card_h // 10)
         usable = card_h - pad
-        gap = max(2, (usable - (text_h * 2 + bar_h)) // 2)
+        stack = text_h * 2 + note_h + bar_h
+        gap = max(2, (usable - stack) // 3)
         usage_row = text_h + gap
-        bar_row = usage_row + text_h + gap
-        return text_h, usage_row, bar_row, bar_h
+        note_row = usage_row + text_h + gap
+        bar_row = note_row + note_h + gap
+        return text_h, note_h, usage_row, note_row, bar_row, bar_h
 
     def fits(size: int) -> bool:
         digit_font = _open_font(mono_path, size)
         if any(digit_font.getlength(text) > usable_px for text in texts):
             return False
-        _text_h, _usage, bar_row, bar_h = rows(size)
+        _text_h, _note_h, _usage, _note, bar_row, bar_h = rows(size)
         return bar_row + bar_h <= card_h
 
     font_px = max(MIN_FONT_PX, min(MAX_FONT_PX, card_h // 4))
     while font_px > MIN_FONT_PX and not fits(font_px):
         font_px -= 2
 
-    text_h, usage_row, bar_row, bar_h = rows(font_px)
+    text_h, note_h, usage_row, note_row, bar_row, bar_h = rows(font_px)
     layout = Layout(
         font_px=font_px,
         text_h=text_h,
@@ -226,6 +256,8 @@ def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,
         card_h=card_h,
         pad=pad,
         usage_row=usage_row,
+        note_row=note_row,
+        note_h=note_h,
         bar_row=bar_row,
         bar_h=bar_h,
     )
@@ -266,8 +298,14 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
         top = layout.content_top + index * layout.card_h
         draw.text((MARGIN_X, top), fit(item.plan_name, body, usable, draw),
                   font=body, fill=0)
-        draw.text((MARGIN_X, top + layout.usage_row),
-                  fit(usage_line(item), digits, usable, draw), font=digits, fill=0)
+        draw_mixed(draw, (MARGIN_X, top + layout.usage_row),
+                   fit(usage_line(item), digits, usable, draw),
+                   digits, body, fill=0)
+        note = getattr(item, "note", "")
+        if note:
+            draw_mixed(draw, (MARGIN_X, top + layout.note_row),
+                       fit(note, stamp_font, usable, draw),
+                       stamp_font, body, fill=0)
 
         if has_bar(item):
             bar_top = top + layout.bar_row

@@ -111,9 +111,13 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
         if credits.get("expireTime"):
             note.append(f"{_md(credits['expireTime'])} 到期")
     if rates:
-        reset = rates["ratelimitCode7d"].get("resetTime")
-        if reset:
-            note.append(f"7天重置 {_md(reset)}")
+        reset5h = (rates.get("ratelimitCode5h") or {}).get("resetTime")
+        if reset5h:
+            when = datetime.fromisoformat(reset5h.replace("Z", "+00:00"))
+            note.append(f"5h重置 {when:%H:%M}")
+        reset7d = rates["ratelimitCode7d"].get("resetTime")
+        if reset7d:
+            note.append(f"7天重置 {_md(reset7d)}")
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=total,
                              quota_used=used, balance=0, unit="%", note=" · ".join(note))]
 
