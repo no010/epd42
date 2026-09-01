@@ -121,7 +121,7 @@ def test_webquota_parsers() -> None:
         "usage/by_api_key/amount": [ds_amount],
     })
     check(ds[0].balance == 5911, "DeepSeek balance parses to cents")
-    for part in ("累计¥271", "tok 1.30亿", "F 77% / P 23%"):
+    for part in ("cum 271CNY", "tdy 0.00", "130.0M tok", "F77%/P23%"):
         check(part in ds[0].note, f"note carries {part!r}")
 
     kimi = parse_kimi({"MembershipService/GetSubscription": [
@@ -135,9 +135,8 @@ def test_webquota_parsers() -> None:
                                  "expireTime": "2026-09-25T01:22:33.648851Z"}},
     ]})
     check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
-    check(600 <= kimi[0].quota_used <= 640,
-          f"the bar is the 7-day remaining share ({kimi[0].quota_used})")
-    for part in ("周余 62", "月余 72.6%", "5h重置 10:22", "7d重置 09-05", "09-25 到期"):
+    check(kimi[0].show_bar is False, "the Kimi card opts out of the progress bar")
+    for part in ("Mo 72.6%", "Wk 62", "5h 10:22", "7d 09-05", "exp 09-25"):
         check(part in kimi[0].note, f"note carries {part!r}")
 
     aliyun = parse_aliyun({
@@ -149,8 +148,8 @@ def test_webquota_parsers() -> None:
             {"code": "200", "data": {"DataV2": {"data": {
                 "code": "SUCCESS", "data": {"specCode": "pro", "remainingDays": 20}}}}}],
     })
-    check(aliyun[0].quota_used == 990, "the bar is the remaining share (99.0%)")
-    for part in ("重置 ", "剩20天"):
+    check(aliyun[0].quota_used == 1, "the bar is usage (0.99% used), not remaining")
+    for part in ("rst 09-07 10:11", "20d"):
         check(part in aliyun[0].note, f"note carries {part!r}")
 
 

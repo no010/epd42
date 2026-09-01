@@ -21,6 +21,7 @@ class SubscriptionItem:
     balance: int        # Balance × 100 (integer cents/fen); 0 if N/A
     unit: str           # "req", "tkn", "CNY", "%", …
     note: str = ""      # extra context for the usage line (expiry, lifetime spend, …)
+    show_bar: bool = True   # False: render this card without a progress bar
 
 
 class ProviderBase(ABC):

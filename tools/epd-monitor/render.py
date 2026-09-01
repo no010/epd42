@@ -179,7 +179,7 @@ def line_font(text: str, ascii_font, cjk_font):
 
 def has_bar(item) -> bool:
     """A bar only means something with a quota; an empty outline reads as 0%."""
-    return bool(item.quota_total)
+    return bool(item.quota_total) and getattr(item, "show_bar", True)
 
 
 def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,

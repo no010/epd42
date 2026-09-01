@@ -79,17 +79,21 @@ def _last_with(bodies: list[dict[str, Any]], *path: str) -> dict[str, Any]:
 
 
 def _tokens_fmt(value: float) -> str:
-    if value >= 1e8:
-        return f"{value / 1e8:.2f}亿"
-    if value >= 1e4:
-        return f"{value / 1e4:.1f}万"
+    if value >= 1e9:
+        return f"{value / 1e9:.2f}B"
+    if value >= 1e6:
+        return f"{value / 1e6:.1f}M"
+    if value >= 1e3:
+        return f"{value / 1e3:.1f}K"
     return f"{value:,.0f}"
 
 
-def parse_deepseek(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
-    """Balance and lifetime spend from the page summary; 30-day token usage by
-    model and its flash/pro split from the usage-chart endpoints the tab
-    loads."""
+def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
+                   now: datetime | None = None) -> list[SubscriptionItem]:
+    """Balance and lifetime spend from the page summary; 30-day cost and token
+    usage by model (with the flash/pro split) from the usage-chart endpoints
+    the tab loads.  ``now`` fixes 'today' for the daily buckets in tests."""
+    now = now or datetime.now().astimezone()
     summary = _last_with(responses.get(DEEPSEEK_SUMMARY_FRAGMENT) or [],
                          "data", "biz_data")
     wallets = summary.get("normal_wallets") or []
@@ -100,7 +104,22 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]]) -> list[Subscript
     note_parts: list[str] = []
     costs = summary.get("total_costs") or []
     if costs:
-        note_parts.append(f"累计¥{float(costs[0].get('amount', 0)):,.0f}")
+        note_parts.append(f"cum {float(costs[0].get('amount', 0)):,.0f}CNY")
+
+    cost_body = _last_with(responses.get(DEEPSEEK_COST_FRAGMENT) or [],
+                           "data", "biz_data", "data")
+    today_start = int(now.replace(hour=0, minute=0, second=0,
+                                  microsecond=0).timestamp())
+    month_cost = today_cost = 0.0
+    for group in cost_body or []:
+        for series in group.get("series") or []:
+            for bucket in series.get("buckets") or []:
+                cost = float(bucket.get("cost", 0))
+                month_cost += cost
+                if bucket.get("time", 0) >= today_start:
+                    today_cost += cost
+    if month_cost:
+        note_parts.append(f"tdy {today_cost:,.2f}")
 
     amount_biz = _last_with(responses.get(DEEPSEEK_AMOUNT_FRAGMENT) or [],
                             "data", "biz_data")
@@ -115,8 +134,8 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]]) -> list[Subscript
     if total_tokens:
         flash = sum(v for k, v in per_model.items() if "flash" in k.lower())
         pro = sum(v for k, v in per_model.items() if "pro" in k.lower())
-        note_parts.append(f"tok {_tokens_fmt(total_tokens)}")
-        note_parts.append(f"F {flash / total_tokens * 100:.0f}% / P {pro / total_tokens * 100:.0f}%")
+        note_parts.append(f"{_tokens_fmt(total_tokens)} tok")
+        note_parts.append(f"F{flash / total_tokens * 100:.0f}%/P{pro / total_tokens * 100:.0f}%")
 
     return [SubscriptionItem(plan_name="DeepSeek", quota_total=0, quota_used=0,
                              balance=balance, unit="CNY",
@@ -145,30 +164,28 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
     if not rates and credits is None:
         raise ProviderError("[Kimi] subscription page returned no quota balance")
 
-    # 余量 everywhere: the bar is the 7-day coding window's remaining share.
-    remaining7d = None
+    # Remaining shares in percent; the 5-hour window exposes only its reset
+    # time, not a ratio.  No bar: the plan name, monthly and weekly remaining
+    # fill the card, and the reset times live on the note line.
     note = []
+    weekly_left = None
     if rates:
         ratio7d = float(rates["ratelimitCode7d"]["ratio"])
-        remaining7d = round((1 - ratio7d) * 1000)
-        note.append(f"周余 {100 - ratio7d * 100:.1f}%")
-        reset5h = (rates.get("ratelimitCode5h") or {}).get("resetTime")
-        if reset5h:
-            when = datetime.fromisoformat(reset5h.replace("Z", "+00:00"))
-            note.append(f"5h重置 {when:%H:%M}")
-        reset7d = rates["ratelimitCode7d"].get("resetTime")
-        if reset7d:
-            note.append(f"7d重置 {_md(reset7d)}")
+        weekly_left = (1 - ratio7d) * 100
+        note.append(f"5h {datetime.fromisoformat(rates['ratelimitCode5h']['resetTime'].replace('Z', '+00:00')):%H:%M}")
+        note.append(f"7d {_md(rates['ratelimitCode7d']['resetTime'])}")
     if credits is not None:
-        note.append(f"月余 {(1 - float(credits['amountUsedRatio'])) * 100:.1f}%")
-        if credits.get("expireTime"):
-            note.append(f"{_md(credits['expireTime'])} 到期")
+        note.append(f"exp {_md(credits['expireTime'])}")
 
-    total = 1000
-    used = remaining7d if remaining7d is not None else round(
-        (1 - float(credits["amountUsedRatio"])) * 1000)
+    monthly_left = (1 - float(credits["amountUsedRatio"])) * 100 if credits else None
+    note.insert(0, f"Mo {monthly_left:.1f}%")
+    note.insert(1, f"Wk {weekly_left:.1f}%")
+
+    total = 100
+    used = round(weekly_left) if weekly_left is not None else round(monthly_left)
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=total,
-                             quota_used=used, balance=0, unit="%", note="·".join(note))]
+                             quota_used=used, balance=0, unit="%",
+                             note="·".join(note), show_bar=False)]
 
 
 ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"
@@ -188,17 +205,19 @@ def parse_aliyun(responses: dict[str, list[dict[str, Any]]]) -> list[Subscriptio
     if not usage:
         raise ProviderError("[Aliyun] token-plan page returned no usage data")
 
-    remaining = (1 - float(usage["per1WeekPercentage"])) * 1000
-    note = []
+    # The bar reads as usage, not remaining: a 93% bar was mistaken for
+    # "93 used".  The metrics line states the remaining share explicitly.
+    used = float(usage["per1WeekPercentage"]) * 100
+    note = [f"left {100 - used:.1f}%"]
     reset = usage.get("per1WeekResetTime")
     if reset:
-        note.append(f"重置 {datetime.fromtimestamp(reset / 1000):%m-%d %H:%M}")
+        note.append(f"rst {datetime.fromtimestamp(reset / 1000):%m-%d %H:%M}")
     days = sub.get("remainingDays")
     if days is not None:
-        note.append(f"剩{days}天")
-    return [SubscriptionItem(plan_name="Aliyun TokenPlan", quota_total=1000,
-                             quota_used=round(remaining), balance=0, unit="%",
-                             note="·".join(note))]
+        note.append(f"{days}d")
+    return [SubscriptionItem(plan_name="Aliyun TokenPlan", quota_total=100,
+                             quota_used=round(used), balance=0, unit="%",
+                             note=" ".join(note))]
 
 
 RECIPES: dict[str, Recipe] = {
