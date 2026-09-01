@@ -21,7 +21,7 @@ class KimiProvider(ProviderBase):
         base = self._cfg.get("base_url", self._DEFAULT_BASE).rstrip("/")
         url = f"{base}/v1/users/me/balance"
         headers = {
-            "Authorization": f"******",
+            "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
         }
         async with httpx.AsyncClient(timeout=15) as client:
@@ -41,7 +41,7 @@ class KimiProvider(ProviderBase):
 
         return [
             SubscriptionItem(
-                plan_name=self._truncate(self.name, 15),
+                plan_name=self.name,
                 quota_total=0,
                 quota_used=0,
                 balance=balance_fen,

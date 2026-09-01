@@ -72,6 +72,7 @@ _BUILTIN_MODULES = {
     "deepseek": "providers.deepseek",
     "zhipu": "providers.zhipu",
     "openai": "providers.openai_provider",
+    "aliyun": "providers.aliyun",
     "generic": "providers.generic",
 }
 

@@ -27,7 +27,7 @@ class OpenAIProvider(ProviderBase):
     async def fetch(self) -> list[SubscriptionItem]:
         base = self._cfg.get("base_url", self._DEFAULT_BASE).rstrip("/")
         headers = {
-            "Authorization": f"******",
+            "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
         }
 
@@ -71,7 +71,7 @@ class OpenAIProvider(ProviderBase):
 
         return [
             SubscriptionItem(
-                plan_name=self._truncate(self.name, 15),
+                plan_name=self.name,
                 quota_total=total_cents,
                 quota_used=used_cents,
                 balance=0,

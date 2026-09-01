@@ -63,6 +63,19 @@ api_key = "..."        # API key from open.bigmodel.cn
 # Optional: international endpoint
 # base_url = "https://api.z.ai"
 
+# ─── Aliyun resource packages (阿里云百炼 Token Plan / 资源包) ──────────────
+# Queries BSS OpenAPI QueryResourcePackageInstances, so it needs an AccessKey
+# pair instead of an api_key. Create a RAM user with only bss:DescribeInstances
+# (read-only billing) and use its keys - a primary-account key can spend money.
+# `keyword` filters packages whose name/type contains it, which is how you pick
+# the token plan out of everything the account owns.
+[[providers]]
+type              = "aliyun"
+name              = "Aliyun"
+access_key_id     = "LTAI..."
+access_key_secret = "..."
+keyword           = "token"    # optional; omit to show every Available package
+
 # ─── OpenAI / ChatGPT ──────────────────────────────────────────────────────
 # Requires an Admin API key (sk-admin-...) with api.usage.read scope.
 # Create one at: platform.openai.com/settings/organization/api-keys
