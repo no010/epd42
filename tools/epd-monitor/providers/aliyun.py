@@ -143,8 +143,8 @@ class AliyunProvider(ProviderBase):
     provider_type = "aliyun"
 
     async def fetch(self) -> list[SubscriptionItem]:
-        key_id = self._cfg.get("access_key_id", "")
-        key_secret = self._cfg.get("access_key_secret", "")
+        key_id = str(self._cfg.get("access_key_id", "")).strip()
+        key_secret = str(self._cfg.get("access_key_secret", "")).strip()
         if not key_id or not key_secret:
             raise ProviderError(
                 f"[{self.name}] access_key_id / access_key_secret are not configured. "

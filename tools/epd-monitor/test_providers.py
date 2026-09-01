@@ -101,8 +101,47 @@ def test_registry() -> None:
     check(item.plan_name == "n", "long names are no longer clamped to 15 bytes")
 
 
+def test_webquota_parsers() -> None:
+    print("web-quota parsers (captured 2026-09-01)")
+    from providers.webquota import parse_aliyun, parse_deepseek, parse_kimi
+
+    ds = parse_deepseek({"code": 0, "msg": "", "data": {"biz_code": 0, "biz_msg": "",
+        "biz_data": {
+            "normal_wallets": [{"currency": "CNY", "balance": "59.1114450400000000",
+                                "token_estimation": "0"}],
+            "bonus_wallets": [{"currency": "CNY", "balance": "0", "token_estimation": "0"}],
+            "total_costs": [{"currency": "CNY", "amount": "271.1589545600000000"}],
+        }}})
+    check(ds[0].balance == 5911 and ds[0].unit == "CNY",
+          f"DeepSeek balance parses to cents ({ds[0].balance})")
+    check(ds[0].note == "累计 ¥271.16", "and carries the lifetime spend as a note")
+
+    kimi = parse_kimi({"subscription": {"goods": {"title": "Allegretto"}},
+                       "balances": [{"feature": "FEATURE_OMNI", "unit": "UNIT_CREDIT",
+                                     "amountUsedRatio": 0.2743,
+                                     "expireTime": "2026-09-25T01:22:33.648851Z"}]})
+    check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
+    check((kimi[0].quota_total, kimi[0].quota_used, kimi[0].unit) == (10_000, 2_743, "%"),
+          "the used ratio becomes a per-ten-thousand quota for the bar")
+    check(kimi[0].note == "09-25 到期", "the expiry becomes a note")
+
+    aliyun = parse_aliyun({
+        "tokenplan/personal/api/v2/usage": {"code": "200", "data": {"DataV2": {"data": {
+            "code": "SUCCESS", "data": {"per1WeekResetTime": 1788747060000,
+                                        "per1WeekPercentage": 0.009919287124999999}}}}},
+        "tokenplan/personal/api/v2/subscription": {"code": "200", "data": {"DataV2": {"data": {
+            "code": "SUCCESS", "data": {"instanceCode": "sfm_tokenplansolo_public_cn-ofv4xapet04",
+                                        "specCode": "pro", "remainingDays": 20,
+                                        "status": "VALID"}}}}},
+    })
+    check((aliyun[0].quota_total, aliyun[0].quota_used, aliyun[0].unit) == (10_000, 99, "%"),
+          "the weekly percentage becomes the bar")
+    check(aliyun[0].note == "pro·剩20天", "the tier and remaining days become a note")
+
+
 def main() -> int:
-    for test in (test_aliyun_signing, test_aliyun_parsing, test_registry):
+    for test in (test_aliyun_signing, test_aliyun_parsing, test_webquota_parsers,
+                 test_registry):
         test()
     print("\nall checks passed")
     return 0

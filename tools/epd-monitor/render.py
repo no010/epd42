@@ -163,6 +163,8 @@ def usage_line(item) -> str:
         parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:
         parts.append(_balance_text(item))
+    if getattr(item, "note", ""):
+        parts.append(item.note)
     return "   ".join(parts) or "no data"
 
 

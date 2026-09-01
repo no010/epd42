@@ -96,3 +96,6 @@ tools/epd-monitor/config.toml
 
 # Frames and previews produced by epd_monitor.py
 tools/epd-monitor/preview.png
+
+# Playwright persistent login profiles (session cookies - never commit)
+tools/epd-monitor/profiles/

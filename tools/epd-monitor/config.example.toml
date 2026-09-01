@@ -63,6 +63,23 @@ api_key = "..."        # API key from open.bigmodel.cn
 # Optional: international endpoint
 # base_url = "https://api.z.ai"
 
+# ─── Web-session providers (登录态，信息最全，无需任何 key) ─────────────────
+# Each of these drives a persistent, logged-in browser profile (your local
+# Edge) to the console page and reads the same responses the page shows.
+# One-time setup per provider - a headed window opens, you sign in, it closes
+# itself once the page loads your data:
+#
+#   uv run python epd_monitor.py login --provider deepseek-web   # 余额 + 累计消费
+#   uv run python epd_monitor.py login --provider kimi-web       # 会员套餐额度 + 到期日
+#   uv run python epd_monitor.py login --provider aliyun-web     # Token Plan 周额度 + 剩余天数
+#
+# Profiles live in tools/epd-monitor/profiles/ (gitignored: they hold session
+# cookies). Options per provider: headed = true (escape hatch for consoles
+# that detect headless browsers), wait_seconds = 45.
+[[providers]]
+type = "deepseek-web"
+name = "DeepSeek"
+
 # ─── Aliyun resource packages (阿里云百炼 Token Plan / 资源包) ──────────────
 # Queries BSS OpenAPI QueryResourcePackageInstances, so it needs an AccessKey
 # pair instead of an api_key. Create a RAM user with only bss:DescribeInstances

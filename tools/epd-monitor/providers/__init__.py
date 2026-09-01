@@ -19,7 +19,8 @@ class SubscriptionItem:
     quota_total: int    # Total quota (tokens, requests, …); 0 if N/A
     quota_used: int     # Used quota; 0 if N/A
     balance: int        # Balance × 100 (integer cents/fen); 0 if N/A
-    unit: str           # "req", "tkn", "CNY", …
+    unit: str           # "req", "tkn", "CNY", "%", …
+    note: str = ""      # extra context for the usage line (expiry, lifetime spend, …)
 
 
 class ProviderBase(ABC):
@@ -45,7 +46,7 @@ class ProviderBase(ABC):
     # ------------------------------------------------------------------
     @property
     def api_key(self) -> str:
-        key = self._cfg.get("api_key", "")
+        key = str(self._cfg.get("api_key", "")).strip()
         if not key:
             raise ProviderError(f"[{self.name}] api_key is not configured")
         return key
@@ -74,6 +75,9 @@ _BUILTIN_MODULES = {
     "openai": "providers.openai_provider",
     "aliyun": "providers.aliyun",
     "generic": "providers.generic",
+    "deepseek-web": "providers.webquota",
+    "kimi-web": "providers.webquota",
+    "aliyun-web": "providers.webquota",
 }
 
 

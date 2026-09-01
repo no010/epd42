@@ -64,7 +64,8 @@ async def _fetch_all(provider_cfgs: list[dict]) -> list:
         except prov_module.ProviderError as exc:
             logger.warning("%s", exc)
         except Exception as exc:  # noqa: BLE001
-            logger.error("[%s] Unexpected error: %s", provider.name, exc)
+            logger.error("[%s] Unexpected error: %s: %s",
+                         provider.name, type(exc).__name__, exc)
     return all_items[:render.MAX_ITEMS]
 
 
@@ -161,7 +162,7 @@ async def cmd_scan(scan_timeout: float) -> None:
 _NEEDS_CONFIG = {"push", "daemon", "status", "render"}
 # These talk to the device or draw synthetic frames: config is welcome (device
 # name, address) but never required.
-_BLE_OR_OPTIONAL_CONFIG = {"scan", "describe", "render", "pattern", "setdriver", "fault"}
+_BLE_OR_OPTIONAL_CONFIG = {"scan", "describe", "render", "pattern", "setdriver", "fault", "login"}
 
 
 def main() -> int:
@@ -172,7 +173,7 @@ def main() -> int:
     parser.add_argument(
         "command",
         choices=["push", "daemon", "status", "render", "scan", "describe",
-                 "pattern", "setdriver", "fault"],
+                 "pattern", "setdriver", "fault", "login"],
         help="Command to run",
     )
     parser.add_argument(
@@ -196,6 +197,8 @@ def main() -> int:
                         help="pattern row-marker: which row to draw (0-299)")
     parser.add_argument("--fraction", type=float, default=0.5,
                         help="fault: how much of the plane to send before ENDing early")
+    parser.add_argument("--provider", choices=["deepseek-web", "kimi-web", "aliyun-web"],
+                        help="login: which web provider to sign in")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
@@ -255,6 +258,13 @@ def main() -> int:
             from ble_client import fault_test
 
             return asyncio.run(fault_test(cfg, fraction=args.fraction))
+        elif args.command == "login":
+            from providers.webquota import RECIPES, open_login
+
+            if not args.provider:
+                print(f"login needs --provider, one of: {sorted(RECIPES)}", file=sys.stderr)
+                return 1
+            open_login(args.provider)
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except RuntimeError as exc:
