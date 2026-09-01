@@ -474,9 +474,13 @@ def test_firmware_parity() -> None:
         text = (FIRMWARE / "EPD" / source_name).read_text(encoding="utf-8")
         body = re.search(r"void EPD_\w+_StreamBegin\(uint8_t plane\)\s*\{(.*?)\n\}",
                          text, re.S).group(1)
-        found = tuple(int(h, 16) for h in re.findall(r"0x([0-9A-Fa-f]{2})", body))
-        check(found == render.DRIVER_PLANES[driver],
-              f"driver {driver} planes {tuple(hex(v) for v in found)} match the host table")
+        image_ram = render.DRIVER_IMAGE_RAM[driver]
+        check(f"0x{image_ram:02x}" in body,
+              f"driver {driver} opens RAM 0x{image_ram:02x} for the image")
+        if driver == 1:
+            check("0x10" in body and "SendData(0x00)" in body,
+                  "driver 1 fills the OLD plane (0x10) before streaming - its refresh is an "
+                  "OLD->NEW transition and an unwritten SRAM renders as noise")
 
         write = re.search(r"void EPD_\w+_StreamWrite\(const uint8_t \*buffer.*?\n\}",
                           text, re.S).group(0)

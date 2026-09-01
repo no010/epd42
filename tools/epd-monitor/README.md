@@ -83,13 +83,23 @@ Wire convention — the same one the working web host in `html/` uses:
 - each write carries the command byte plus up to 19 payload bytes (the 20-byte
   ATT ceiling: S110/S130 are Bluetooth 4.1, with no MTU exchange to grow it)
 
-| plane | driver 1 `EPD_DRIVER_4IN2` | driver 2 `EPD_DRIVER_4IN2_V2` | driver 3 `EPD_DRIVER_4IN2B_V2` |
-|-------|--------------------------|-------------------------------|--------------------------------|
-| 0     | `0x10`                   | `0x24`                        | `0x10` (black)                 |
-| 1     | `0x13`                   | `0x26`                        | `0x13` (red)                   |
+| driver | image goes to | companion SRAM | planes the host sends |
+|---|---|---|---|
+| 1 `EPD_DRIVER_4IN2` (UC8176) | `0x13` (NEW) | `0x10` (OLD), filled by the firmware with `0x00` | 1 |
+| 2 `EPD_DRIVER_4IN2_V2` | `0x24` | `0x26` untouched — unverified, see below | 1 |
+| 3 `EPD_DRIVER_4IN2B_V2` (UC8276C) | `0x10` (B/W), then `0x13` (red) | both come from the host | 2 |
 
-A black-and-white panel is driven with plane 0 only; a BWR panel gets both, and
-only the final plane carries the refresh flag.
+"Plane 0" in the protocol means *the image*, not a specific RAM command: each
+driver decides where it goes. On the UC8176 a refresh is the **OLD → NEW**
+transition, so both SRAMs must hold data - an unwritten SRAM keeps its power-on
+contents and the panel then drives every pixel randomly, which on hardware looks
+like a wall of noise. The firmware fills OLD itself, so the host still sends one
+plane. Only the final plane carries the refresh flag.
+
+Driver 2 streams a single plane because that is the only path observed working
+in `html/js`; the SSD1683 datasheet is not in this repo, so its `0x26` semantics
+are unverified rather than known-good. If a V2 panel shows noise, that plane
+needs filling the same way.
 
 | Command | Byte | Direction | Payload |
 |---------|------|-----------|---------|

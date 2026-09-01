@@ -227,6 +227,14 @@ parameter:
 Info:		Bytes are forwarded verbatim: the host packs the panel's own
 		polarity (1 = white).  The window and address counters are re-armed
 		per plane because they sit at the far corner after a full pass.
+
+		A black-and-white frame streams plane 0 only and leaves 0x26 alone.
+		The UC8176 just showed that an unwritten companion SRAM can render as
+		a wall of noise, but the SSD1683 datasheet is not in this repo and the
+		single-plane path is the only one observed working (html/js/main.js
+		does the same), so it is left as-is rather than guessed at.  If a V2
+		panel shows noise, fill 0x26 here the way EPD_4IN2_StreamBegin fills
+		its OLD plane.
 ******************************************************************************/
 uint16_t EPD_4IN2_V2_StreamPlaneBytes(void)
 {

@@ -26,13 +26,16 @@ SCREEN_HEIGHT = 300
 LINE_BYTES = SCREEN_WIDTH // 8
 PLANE_BYTES = LINE_BYTES * SCREEN_HEIGHT
 
-# Plane RAM commands per driver, in stream order.  Mirrors the switch in
-# EPD/EPD_4in2.c, EPD/EPD_4in2_V2.c and EPD/EPD_4in2b_V2.c.
-DRIVER_PLANES: dict[int, tuple[int, ...]] = {
-    1: (0x10, 0x13),      # EPD_DRIVER_4IN2      - UC8176: old data, new data
-    2: (0x24, 0x26),      # EPD_DRIVER_4IN2_V2   - black, second plane
-    3: (0x10, 0x13),      # EPD_DRIVER_4IN2B_V2  - UC8276C: black, red
-}
+# What the host streams, and where each image lands in the panel's RAM.
+#
+# A black-and-white update on the UC8176 is the OLD (0x10) -> NEW (0x13)
+# transition, so both SRAMs need data; the host sends only the image and the
+# firmware fills OLD itself.  A tri-colour panel genuinely needs two planes from
+# the host: B/W and red.  Driver 2 streams one plane because that is the only
+# path observed working from html/js - it is not verified against the SSD1683
+# datasheet, which is not in this repo.
+DRIVER_PLANES: dict[int, int] = {1: 1, 2: 1, 3: 2}
+DRIVER_IMAGE_RAM: dict[int, int] = {1: 0x13, 2: 0x24, 3: 0x10}
 DRIVER_NAMES = {
     1: "4.2in e-Paper (UC8176)",
     2: "4.2in e-Paper V2 (BW)",
@@ -358,8 +361,8 @@ def pack_planes(image, driver_id: int, planes: int = 1) -> list[Plane]:
     """Pack ``image`` into the planes ``driver_id`` expects, in stream order."""
     if driver_id not in DRIVER_PLANES:
         raise ValueError(f"unknown driver id {driver_id}; known: {sorted(DRIVER_PLANES)}")
-    if not 1 <= planes <= len(DRIVER_PLANES[driver_id]):
-        raise ValueError(f"driver {driver_id} supports 1..{len(DRIVER_PLANES[driver_id])} planes")
+    if not 1 <= planes <= DRIVER_PLANES[driver_id]:
+        raise ValueError(f"driver {driver_id} supports 1..{DRIVER_PLANES[driver_id]} planes")
 
     packed = [Plane(0, pack_plane(image))]
     if planes > 1:
