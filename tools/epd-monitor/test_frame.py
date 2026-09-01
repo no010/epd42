@@ -498,45 +498,23 @@ def test_firmware_parity() -> None:
           "closing a plane resets the decoder, so a retry never inherits mid-packet state")
 
 
-def test_mixed_script() -> None:
-    print("mixed-script rendering")
-    check(render._split_runs("abc中文") == [(True, "abc"), (False, "中文")],
-          "runs alternate at the ASCII/CJK boundary")
-    check(render._split_runs("") == [], "an empty string has no runs")
-    check(render._split_runs("v1.2") == [(True, "v1.2")], "pure ASCII stays one run")
-
-    path, mono = render.select_fonts()
-    from PIL import Image, ImageDraw
-
-    image = Image.new("L", (400, 40), 255)
-    draw = ImageDraw.Draw(image)
-    body = render._open_font(path, 16)
-    digits = render._open_font(mono or path, 16)
-    render.draw_mixed(draw, (4, 4), "credits 27.4% · 5h重置 10:22", digits, body, 0)
-
-    band = image.crop((0, 0, 400, 40))
-    ink_cols = sum(1 for x in range(400)
-                   if min(band.crop((x, 0, x + 1, 40)).getdata()) == 0)
-    check(ink_cols >= 60, f"the mixed line inks {ink_cols} columns")
-
-    # The tofu signature is width: CJK in the tabular font would advance at
-    # roughly half the width of the real CJK face.
-    probe = Image.new("L", (200, 40), 255)
-    d2 = ImageDraw.Draw(probe)
-    text = "重置到期"
-    render.draw_mixed(d2, (4, 4), text, digits, body, 0)
-    drawn_width = max(x for x in range(200)
-                      if min(probe.crop((x, 0, x + 1, 40)).getdata()) == 0) + 1 - 4
-    expected = round(draw.textlength(text, font=body))
-    check(abs(drawn_width - expected) <= 3,
-          f"CJK advance width {drawn_width}px matches the CJK face "
-          f"({expected}px); the tabular font would be ~{round(draw.textlength(text, font=digits))}px")
+def test_line_fonts() -> None:
+    print("per-line font selection")
+    digits, cjk = object(), object()
+    check(render.line_font("59.11", digits, cjk) is digits,
+          "a pure-ASCII line uses the tabular face")
+    check(render.line_font("¥59.11", digits, cjk) is cjk,
+          "¥ is not ASCII, so a currency line uses the CJK face")
+    check(render.line_font("月余 72.6%·9-25 到期", digits, cjk) is cjk,
+          "a line with CJK renders entirely in the CJK face - per-run mixing "
+          "misaligns baselines, which read as broken layout")
+    check(render.line_font("", digits, cjk) is digits, "an empty line is mono")
 
 
 def main() -> int:
     for test in (test_geometry, test_packing, test_checksum, test_chunking, test_packbits,
                  test_client_protocol, test_layout, test_bars, test_text_formatting,
-                 test_font_selection, test_width_aware_font, test_mixed_script,
+                 test_font_selection, test_width_aware_font, test_line_fonts,
                  test_composition, test_planes, test_firmware_parity):
         test()
     print("\nall checks passed")
@@ -545,3 +523,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+

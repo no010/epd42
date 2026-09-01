@@ -171,48 +171,10 @@ def usage_line(item) -> str:
     return "   ".join(parts) or "no data"
 
 
-def _split_runs(text: str) -> list[tuple[bool, str]]:
-    """Split into consecutive (is_ascii, run) pairs.
-
-    The metrics line is drawn in the tabular font, which has no CJK glyphs -
-    Chinese in it rendered as tofu boxes - so runs alternate between the two
-    fonts.
-    """
-    runs: list[tuple[bool, str]] = []
-    for ch in text:
-        ascii_run = ord(ch) < 128
-        if runs and runs[-1][0] == ascii_run:
-            runs[-1] = (ascii_run, runs[-1][1] + ch)
-        else:
-            runs.append((ascii_run, ch))
-    return runs
-
-
-def draw_mixed(draw, xy: tuple[int, int], text: str, ascii_font, cjk_font, fill) -> None:
-    """Draw ``text`` at xy, using the tabular font for ASCII runs and the CJK
-    font for everything else."""
-    x, y = xy
-    for ascii_run, run in _split_runs(text):
-        font = ascii_font if ascii_run else cjk_font
-        draw.text((int(x), y), run, font=font, fill=fill)
-        x += draw.textlength(run, font=font)
-
-
-def mixed_length(text: str, ascii_font, cjk_font, draw) -> float:
-    """Width of ``text`` as draw_mixed will render it: per-run fonts, since the
-    tabular font's advance for CJK is about half the real CJK face - measuring
-    with it alone undercounts and lets lines overflow."""
-    return sum(draw.textlength(run, font=ascii_font if ascii_run else cjk_font)
-               for ascii_run, run in _split_runs(text))
-
-
-def fit_mixed(text: str, ascii_font, cjk_font, max_px: float, draw) -> str:
-    """fit() for lines that draw_mixed will render with per-run fonts."""
-    if not text or mixed_length(text, ascii_font, cjk_font, draw) <= max_px:
-        return text
-    while text and mixed_length(text + "…", ascii_font, cjk_font, draw) > max_px:
-        text = text[:-1]
-    return text + "…" if text else ""
+def line_font(text: str, ascii_font, cjk_font):
+    """One font per line: a line containing CJK renders entirely in the CJK
+    face - per-run font mixing misaligns baselines and advances."""
+    return ascii_font if all(ord(ch) < 128 for ch in text) else cjk_font
 
 
 def has_bar(item) -> bool:
@@ -317,14 +279,14 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
         draw.text((MARGIN_X, top), fit(item.plan_name, body, usable, draw),
                   font=body, fill=0)
         usage = usage_line(item)
-        draw_mixed(draw, (MARGIN_X, top + layout.usage_row),
-                   fit_mixed(usage, digits, body, usable, draw),
-                   digits, body, fill=0)
+        usage_font = line_font(usage, body, digits)
+        draw.text((MARGIN_X, top + layout.usage_row),
+                  fit(usage, usage_font, usable, draw), font=usage_font, fill=0)
         note = getattr(item, "note", "")
         if note:
-            draw_mixed(draw, (MARGIN_X, top + layout.note_row),
-                       fit_mixed(note, stamp_font, note_cjk, usable, draw),
-                       stamp_font, note_cjk, fill=0)
+            note_font = line_font(note, stamp_font, note_cjk)
+            draw.text((MARGIN_X, top + layout.note_row),
+                      fit(note, note_font, usable, draw), font=note_font, fill=0)
 
         if has_bar(item):
             bar_top = top + layout.bar_row

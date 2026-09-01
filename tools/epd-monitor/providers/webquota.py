@@ -57,25 +57,70 @@ def _md(iso: str) -> str:
 
 
 DEEPSEEK_SUMMARY_FRAGMENT = "users/get_user_summary"
+DEEPSEEK_COST_FRAGMENT = "usage/by_api_key/cost"
+DEEPSEEK_AMOUNT_FRAGMENT = "usage/by_api_key/amount"
 KIMI_SUBSCRIPTION_FRAGMENT = "MembershipService/GetSubscription"
 ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"
 ALIYUN_SUBSCRIPTION_FRAGMENT = "tokenplan/personal/api/v2/subscription"
 
 
+def _last_with(bodies: list[dict[str, Any]], *path: str) -> dict[str, Any]:
+    """Walk the newest-to-oldest bodies and return the first whose nested path
+    exists - a cold start can serve an empty pre-auth shape first."""
+    for body in reversed(bodies):
+        node = body
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                break
+            node = node[key]
+        else:
+            return node
+    return {}
+
+
+def _tokens_fmt(value: float) -> str:
+    if value >= 1e8:
+        return f"{value / 1e8:.2f}亿"
+    if value >= 1e4:
+        return f"{value / 1e4:.1f}万"
+    return f"{value:,.0f}"
+
+
 def parse_deepseek(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
-    for body in reversed(responses.get(DEEPSEEK_SUMMARY_FRAGMENT) or []):
-        biz = (body.get("data") or {}).get("biz_data") or {}
-        wallets = biz.get("normal_wallets") or []
-        if not wallets:
-            continue
-        note = ""
-        costs = biz.get("total_costs") or []
-        if costs:
-            note = f"累计 ¥{float(costs[0].get('amount', 0)):,.2f}"
-        return [SubscriptionItem(plan_name="DeepSeek", quota_total=0, quota_used=0,
-                                 balance=_cents(wallets[0].get("balance", 0)),
-                                 unit="CNY", note=note)]
-    raise ProviderError("[DeepSeek] usage page returned no wallet data")
+    """Balance and lifetime spend from the page summary; 30-day token usage by
+    model and its flash/pro split from the usage-chart endpoints the tab
+    loads."""
+    summary = _last_with(responses.get(DEEPSEEK_SUMMARY_FRAGMENT) or [],
+                         "data", "biz_data")
+    wallets = summary.get("normal_wallets") or []
+    if not wallets:
+        raise ProviderError("[DeepSeek] usage page returned no wallet data")
+    balance = _cents(wallets[0].get("balance", 0))
+
+    note_parts: list[str] = []
+    costs = summary.get("total_costs") or []
+    if costs:
+        note_parts.append(f"累计¥{float(costs[0].get('amount', 0)):,.0f}")
+
+    amount_biz = _last_with(responses.get(DEEPSEEK_AMOUNT_FRAGMENT) or [],
+                            "data", "biz_data")
+    per_model: dict[str, float] = {}
+    for series in amount_biz.get("series") or []:
+        model = series.get("model", "?")
+        for bucket in series.get("buckets") or []:
+            usage = bucket.get("usage") or {}
+            per_model[model] = per_model.get(model, 0) + sum(
+                float(v) for k, v in usage.items() if "TOKEN" in k)
+    total_tokens = sum(per_model.values())
+    if total_tokens:
+        flash = sum(v for k, v in per_model.items() if "flash" in k.lower())
+        pro = sum(v for k, v in per_model.items() if "pro" in k.lower())
+        note_parts.append(f"tok {_tokens_fmt(total_tokens)}")
+        note_parts.append(f"F {flash / total_tokens * 100:.0f}% / P {pro / total_tokens * 100:.0f}%")
+
+    return [SubscriptionItem(plan_name="DeepSeek", quota_total=0, quota_used=0,
+                             balance=balance, unit="CNY",
+                             note="·".join(note_parts))]
 
 
 def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
@@ -87,35 +132,41 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
             title = body["subscription"]["goods"].get("title", "")
         if "ratelimitCode7d" in body:
             rates = body
-        if credits is None and (body.get("subscriptionBalance") or {}).get("amountUsedRatio") is not None:
-            credits = body["subscriptionBalance"]
         if credits is None:
-            for b in body.get("balances", []):
-                if "amountUsedRatio" in b:
-                    credits = b
-                    break
+            balance = body.get("subscriptionBalance") or {}
+            if balance.get("amountUsedRatio") is not None:
+                credits = balance
+            else:
+                for b in body.get("balances") or []:
+                    if "amountUsedRatio" in b:
+                        credits = b
+                        break
 
     if not rates and credits is None:
         raise ProviderError("[Kimi] subscription page returned no quota balance")
 
-    # The bar tracks the 7-day coding window: it is the quota that actually
-    # gates usage, and the reason the quota tab exists.
-    if rates:
-        used, total = round(float(rates["ratelimitCode7d"]["ratio"]) * 1000), 1000
-    elif credits:
-        used, total = round(float(credits["amountUsedRatio"]) * 1000), 1000
-
-    # Note budget fits one small line, so it carries credits, the 7-day reset
-    # and expiry; the 5-hour window is too volatile for a 30-min display.
+    # 余量 everywhere: the bar is the 7-day coding window's remaining share.
+    remaining7d = None
     note = []
-    if credits is not None:
-        note.append(f"credits {float(credits['amountUsedRatio']) * 100:.1f}%")
     if rates:
-        reset7d = (rates["ratelimitCode7d"] or {}).get("resetTime")
+        ratio7d = float(rates["ratelimitCode7d"]["ratio"])
+        remaining7d = round((1 - ratio7d) * 1000)
+        note.append(f"周余 {100 - ratio7d * 100:.1f}%")
+        reset5h = (rates.get("ratelimitCode5h") or {}).get("resetTime")
+        if reset5h:
+            when = datetime.fromisoformat(reset5h.replace("Z", "+00:00"))
+            note.append(f"5h重置 {when:%H:%M}")
+        reset7d = rates["ratelimitCode7d"].get("resetTime")
         if reset7d:
-            note.append(f"7天重置 {_md(reset7d)}")
-    if credits is not None and credits.get("expireTime"):
-        note.append(f"{_md(credits['expireTime'])} 到期")
+            note.append(f"7d重置 {_md(reset7d)}")
+    if credits is not None:
+        note.append(f"月余 {(1 - float(credits['amountUsedRatio'])) * 100:.1f}%")
+        if credits.get("expireTime"):
+            note.append(f"{_md(credits['expireTime'])} 到期")
+
+    total = 1000
+    used = remaining7d if remaining7d is not None else round(
+        (1 - float(credits["amountUsedRatio"])) * 1000)
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=total,
                              quota_used=used, balance=0, unit="%", note="·".join(note))]
 
@@ -133,22 +184,28 @@ def parse_aliyun(responses: dict[str, list[dict[str, Any]]]) -> list[Subscriptio
         return {}
 
     usage = last_with(ALIYUN_USAGE_FRAGMENT, "per1WeekPercentage")
-    sub = last_with(ALIYUN_SUBSCRIPTION_FRAGMENT, "specCode")
+    sub = last_with(ALIYUN_SUBSCRIPTION_FRAGMENT, "remainingDays")
     if not usage:
         raise ProviderError("[Aliyun] token-plan page returned no usage data")
 
-    used = round(float(usage["per1WeekPercentage"]) * 1000)
-    spec = sub.get("specCode", "")
+    remaining = (1 - float(usage["per1WeekPercentage"])) * 1000
+    note = []
+    reset = usage.get("per1WeekResetTime")
+    if reset:
+        note.append(f"重置 {datetime.fromtimestamp(reset / 1000):%m-%d %H:%M}")
     days = sub.get("remainingDays")
-    note = f"{spec}·剩{days}天" if days is not None else spec
+    if days is not None:
+        note.append(f"剩{days}天")
     return [SubscriptionItem(plan_name="Aliyun TokenPlan", quota_total=1000,
-                             quota_used=used, balance=0, unit="%", note=note)]
+                             quota_used=round(remaining), balance=0, unit="%",
+                             note="·".join(note))]
 
 
 RECIPES: dict[str, Recipe] = {
     "deepseek-web": Recipe(
         start_url="https://platform.deepseek.com/usage",
-        expect=(DEEPSEEK_SUMMARY_FRAGMENT,),
+        expect=(DEEPSEEK_SUMMARY_FRAGMENT, DEEPSEEK_COST_FRAGMENT,
+                DEEPSEEK_AMOUNT_FRAGMENT),
         parse=parse_deepseek,
         login_hint="登录 DeepSeek 开放平台（手机验证码或微信扫码）",
     ),
