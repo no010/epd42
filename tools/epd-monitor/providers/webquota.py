@@ -105,21 +105,19 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
     elif credits:
         used, total = round(float(credits["amountUsedRatio"]) * 1000), 1000
 
+    # Note budget fits one small line, so it carries credits, the 7-day reset
+    # and expiry; the 5-hour window is too volatile for a 30-min display.
     note = []
     if credits is not None:
         note.append(f"credits {float(credits['amountUsedRatio']) * 100:.1f}%")
-        if credits.get("expireTime"):
-            note.append(f"{_md(credits['expireTime'])} 到期")
     if rates:
-        reset5h = (rates.get("ratelimitCode5h") or {}).get("resetTime")
-        if reset5h:
-            when = datetime.fromisoformat(reset5h.replace("Z", "+00:00"))
-            note.append(f"5h重置 {when:%H:%M}")
-        reset7d = rates["ratelimitCode7d"].get("resetTime")
+        reset7d = (rates["ratelimitCode7d"] or {}).get("resetTime")
         if reset7d:
             note.append(f"7天重置 {_md(reset7d)}")
+    if credits is not None and credits.get("expireTime"):
+        note.append(f"{_md(credits['expireTime'])} 到期")
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=total,
-                             quota_used=used, balance=0, unit="%", note=" · ".join(note))]
+                             quota_used=used, balance=0, unit="%", note="·".join(note))]
 
 
 ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"

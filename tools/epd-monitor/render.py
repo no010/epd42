@@ -198,6 +198,23 @@ def draw_mixed(draw, xy: tuple[int, int], text: str, ascii_font, cjk_font, fill)
         x += draw.textlength(run, font=font)
 
 
+def mixed_length(text: str, ascii_font, cjk_font, draw) -> float:
+    """Width of ``text`` as draw_mixed will render it: per-run fonts, since the
+    tabular font's advance for CJK is about half the real CJK face - measuring
+    with it alone undercounts and lets lines overflow."""
+    return sum(draw.textlength(run, font=ascii_font if ascii_run else cjk_font)
+               for ascii_run, run in _split_runs(text))
+
+
+def fit_mixed(text: str, ascii_font, cjk_font, max_px: float, draw) -> str:
+    """fit() for lines that draw_mixed will render with per-run fonts."""
+    if not text or mixed_length(text, ascii_font, cjk_font, draw) <= max_px:
+        return text
+    while text and mixed_length(text + "…", ascii_font, cjk_font, draw) > max_px:
+        text = text[:-1]
+    return text + "…" if text else ""
+
+
 def has_bar(item) -> bool:
     """A bar only means something with a quota; an empty outline reads as 0%."""
     return bool(item.quota_total)
@@ -286,6 +303,7 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
     items = list(items)[:MAX_ITEMS]
     usable = SCREEN_WIDTH - 2 * MARGIN_X
     stamp_font = _open_font(mono_path or text_font_path, STAMP_FONT_PX)
+    note_cjk = _open_font(text_font_path, STAMP_FONT_PX)
     layout, body, digits = plan(len(items) or 1, text_font_path, mono_path, stamp_font,
                                 texts=[usage_line(item) for item in items],
                                 usable_px=usable)
@@ -298,14 +316,15 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
         top = layout.content_top + index * layout.card_h
         draw.text((MARGIN_X, top), fit(item.plan_name, body, usable, draw),
                   font=body, fill=0)
+        usage = usage_line(item)
         draw_mixed(draw, (MARGIN_X, top + layout.usage_row),
-                   fit(usage_line(item), digits, usable, draw),
+                   fit_mixed(usage, digits, body, usable, draw),
                    digits, body, fill=0)
         note = getattr(item, "note", "")
         if note:
             draw_mixed(draw, (MARGIN_X, top + layout.note_row),
-                       fit(note, stamp_font, usable, draw),
-                       stamp_font, body, fill=0)
+                       fit_mixed(note, stamp_font, note_cjk, usable, draw),
+                       stamp_font, note_cjk, fill=0)
 
         if has_bar(item):
             bar_top = top + layout.bar_row
