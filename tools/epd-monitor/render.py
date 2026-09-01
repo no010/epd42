@@ -291,14 +291,19 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
         if has_bar(item):
             bar_top = top + layout.bar_row
             bar_bottom = min(bar_top + layout.bar_h, top + layout.card_h - 1)
-            draw.rectangle((MARGIN_X, bar_top, SCREEN_WIDTH - MARGIN_X - 1, bar_bottom),
-                           outline=0)
-            inner = SCREEN_WIDTH - 2 * MARGIN_X - 2
+            bar_right = SCREEN_WIDTH - MARGIN_X - 1
+            bar_text = getattr(item, "bar_text", "")
+            if bar_text:
+                bar_right -= int(usable * 0.34)
+            draw.rectangle((MARGIN_X, bar_top, bar_right, bar_bottom), outline=0)
+            inner = bar_right - MARGIN_X - 1
             filled = min(max(item.quota_used, 0), item.quota_total)
             width = inner * filled // item.quota_total
             if width:
                 draw.rectangle((MARGIN_X + 1, bar_top + 1, MARGIN_X + width,
                                 bar_bottom - 1), fill=0)
+            if bar_text:
+                draw.text((bar_right + 6, bar_top), bar_text, font=stamp_font, fill=0)
 
     stamp = updated if updated is not None else datetime.now().strftime("%m-%d %H:%M")
     if stamp:

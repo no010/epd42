@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -109,35 +109,62 @@ def test_webquota_parsers() -> None:
         "normal_wallets": [{"currency": "CNY", "balance": "59.1114450400000000"}],
         "total_costs": [{"currency": "CNY", "amount": "271.1589545600000000"}]}}}
     ds_cost = {"code": 0, "data": {"biz_data": {"data": [{"series": [
-        {"model": "deepseek-v4-flash", "buckets": [{"cost": "1.5"}, {"cost": "0.5"}]}]}]}}}
+        {"model": "deepseek-v4-flash", "buckets": [
+            {"time": 1788100000, "cost": "1.5"},
+            {"time": 1788278400, "cost": "0.5"}]}]}]}}}
     ds_amount = {"code": 0, "data": {"biz_data": {"series": [
         {"model": "deepseek-v4-flash", "buckets": [
-            {"usage": {"RESPONSE_TOKEN": 60_000_000, "PROMPT_CACHE_HIT_TOKEN": 40_000_000}}]},
+            {"time": 1788100000,
+             "usage": {"RESPONSE_TOKEN": 60_000_000, "PROMPT_CACHE_HIT_TOKEN": 40_000_000}},
+            {"time": 1788278400, "usage": {"RESPONSE_TOKEN": 20_000_000}}]},
         {"model": "deepseek-v4-pro", "buckets": [
-            {"usage": {"RESPONSE_TOKEN": 30_000_000}}]}]}}}
+            {"time": 1788278400, "usage": {"RESPONSE_TOKEN": 10_000_000}}]}]}}}
+    noon = datetime(2026, 9, 1, 12, 0, tzinfo=timezone(timedelta(hours=8)))
     ds = parse_deepseek({
         "users/get_user_summary": [{"code": 0, "data": None}, ds_summary],
         "usage/by_api_key/cost": [ds_cost],
         "usage/by_api_key/amount": [ds_amount],
-    })
+    }, now=noon)
     check(ds[0].balance == 5911, "DeepSeek balance parses to cents")
-    for part in ("cum 271CNY", "tdy 0.00", "130.0M tok", "F77%/P23%"):
+    for part in ("cum 271CNY", "tdy ¥0.50", "tok 30.0M", "F67%/P33%"):
         check(part in ds[0].note, f"note carries {part!r}")
 
-    kimi = parse_kimi({"MembershipService/GetSubscription": [
-        {"subscription": {"goods": {"title": "Allegretto"}},
-         "balances": [{"feature": "FEATURE_OMNI", "amountUsedRatio": 0.2743,
-                       "expireTime": "2026-09-25T01:22:33.648851Z"}]},
-        {"ratelimitCode5h": {"enabled": True, "resetTime": "2026-09-01T10:22:33Z"},
-         "ratelimitCode7d": {"ratio": 0.3785, "enabled": True,
-                             "resetTime": "2026-09-05T01:22:33Z"},
-         "subscriptionBalance": {"amountUsedRatio": 0.2743,
-                                 "expireTime": "2026-09-25T01:22:33.648851Z"}},
-    ]})
+    kimi_stats = {"ratelimitCode5h": {"ratio": 0.0681, "enabled": True,
+                                      "resetTime": "2026-09-01T10:22:33Z"},
+                  "ratelimitCode7d": {"ratio": 0.3922, "enabled": True,
+                                      "resetTime": "2026-09-05T01:22:33Z"},
+                  "subscriptionBalance": {"feature": "FEATURE_OMNI",
+                                          "amountUsedRatio": 0.277,
+                                          "kimiCodeUsedRatio": 0.2466,
+                                          "expireTime": "2026-09-25T01:22:33.648851Z"}}
+    kimi = parse_kimi({
+        "MembershipService/GetSubscription": [
+            {"subscription": {"goods": {"title": "Allegretto"}},
+             "balances": [{"feature": "FEATURE_OMNI", "amountUsedRatio": 0.2743,
+                           "expireTime": "2026-09-25T01:22:33.648851Z"}]},
+            kimi_stats,
+        ],
+        "MembershipService/GetSubscriptionStats": [kimi_stats],
+    })
     check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
-    check(kimi[0].show_bar is False, "the Kimi card opts out of the progress bar")
-    for part in ("Mo 72.6%", "Wk 62", "5h 10:22", "7d 09-05", "exp 09-25"):
+    check(kimi[0].quota_used == 93,
+          "the bar is the 5-hour remaining share (93.2% left)")
+    check(kimi[0].bar_text == "rst 18:22",
+          "the 5h reset time sits at the bar's right (local time)")
+    for part in ("Mo 72%", "Wk 61%", "7d rst 09-05", "exp 09-25"):
         check(part in kimi[0].note, f"note carries {part!r}")
+
+    fresh = {**kimi_stats,
+             "ratelimitCode5h": {"enabled": True,
+                                 "resetTime": "2026-09-01T15:22:33Z"}}
+    kimi_fresh = parse_kimi({
+        "MembershipService/GetSubscription": [kimi_stats],
+        "MembershipService/GetSubscriptionStats": [fresh],
+    })
+    check(kimi_fresh[0].quota_used == 100,
+          "a fresh 5h window (no ratio) reads as 100% remaining")
+    check(kimi_fresh[0].bar_text == "rst 23:22",
+          "the fresh window still shows its reset time")
 
     aliyun = parse_aliyun({
         "tokenplan/personal/api/v2/usage": [

@@ -2,7 +2,7 @@
 
 The vendor APIs for these subscriptions either do not exist (Bailian Token
 Plan, Kimi membership) or report far less than the console shows (DeepSeek's
-API key endpoint has no total-spend figure).  The console pages themselves call
+API key endpoint has no token usage figure).  The console pages themselves call
 internal endpoints whose responses carry the real numbers, so this module
 drives a persistent, logged-in browser profile to the page, captures those
 responses, and parses them.
@@ -14,22 +14,27 @@ client gets a 401 on Kimi - so the browser is the integration point, not a
 shortcut.
 
 Profiles live in ``profiles/<provider>/`` next to the tool; a profile starts
-empty, so run ``epd_monitor.py login <provider>`` once per provider to sign in
-headed.  Afterwards fetches run headless in the same profile.
+empty, so run ``epd_monitor.py login --provider <type>`` once per provider to
+sign in headed.  DeepSeek and Kimi then fetch headless from that profile.  The
+Bailian console keeps its login in session cookies, which Chromium does not
+persist across browser restarts, so its window parks off-screen and stays
+resident instead (configure it with headless = false).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
-from playwright.sync_api import sync_playwright
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from playwright.sync_api import sync_playwright
 
 from providers import ProviderBase, ProviderError, SubscriptionItem, register
 
@@ -44,24 +49,24 @@ class Recipe:
 
     start_url: str
     expect: tuple[str, ...]                       # URL fragments to capture
-    parse: Callable[[dict[str, Any]], list[SubscriptionItem]]
+    parse: Callable[..., list[SubscriptionItem]]
     login_hint: str
+    replay: Callable[[], tuple[str, ...]] = ()    # URLs to re-fetch in the page
+                                                  # context with custom params
 
 
 def _cents(amount: str | float) -> int:
     return int(round(float(amount) * 100))
 
 
+def _local(iso: str) -> datetime:
+    """Server timestamps are UTC; the device sits next to the user, so reset
+    and expiry times read in the machine's own timezone (matches the console)."""
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+
+
 def _md(iso: str) -> str:
-    return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%m-%d")
-
-
-DEEPSEEK_SUMMARY_FRAGMENT = "users/get_user_summary"
-DEEPSEEK_COST_FRAGMENT = "usage/by_api_key/cost"
-DEEPSEEK_AMOUNT_FRAGMENT = "usage/by_api_key/amount"
-KIMI_SUBSCRIPTION_FRAGMENT = "MembershipService/GetSubscription"
-ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"
-ALIYUN_SUBSCRIPTION_FRAGMENT = "tokenplan/personal/api/v2/subscription"
+    return _local(iso).strftime("%m-%d")
 
 
 def _last_with(bodies: list[dict[str, Any]], *path: str) -> dict[str, Any]:
@@ -88,11 +93,34 @@ def _tokens_fmt(value: float) -> str:
     return f"{value:,.0f}"
 
 
+def _deepseek_replay_urls(now: datetime) -> tuple[str, ...]:
+    """The usage tab charts a window ending at local midnight, so today's
+    buckets never appear in its own requests.  These copies - same origin,
+    same cookies - ask for today only."""
+    base = "https://platform.deepseek.com/api/v0/usage/by_api_key"
+    # The API rejects anything but day-aligned boundaries (tz=28800, UTC+8),
+    # matching how the page itself frames its chart window.
+    tz_off = 28800
+    day = (int(now.timestamp()) + tz_off) // 86400 * 86400 - tz_off
+    return (f"{base}/amount?start={day}&end={day + 86400}&tz={tz_off}",
+            f"{base}/cost?start={day}&end={day + 86400}&tz={tz_off}")
+
+
+DEEPSEEK_SUMMARY_FRAGMENT = "users/get_user_summary"
+DEEPSEEK_COST_FRAGMENT = "usage/by_api_key/cost"
+DEEPSEEK_AMOUNT_FRAGMENT = "usage/by_api_key/amount"
+KIMI_SUBSCRIPTION_FRAGMENT = "MembershipService/GetSubscription"
+KIMI_STATS_FRAGMENT = "MembershipService/GetSubscriptionStats"
+ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"
+ALIYUN_SUBSCRIPTION_FRAGMENT = "tokenplan/personal/api/v2/subscription"
+
+
 def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
                    now: datetime | None = None) -> list[SubscriptionItem]:
-    """Balance and lifetime spend from the page summary; 30-day cost and token
-    usage by model (with the flash/pro split) from the usage-chart endpoints
-    the tab loads.  ``now`` fixes 'today' for the daily buckets in tests."""
+    """Balance and lifetime spend from the page summary; 30-day cost and
+    today's token usage by model (with the flash/pro split) from the
+    usage-chart endpoints the tab loads.  ``now`` fixes 'today' for the daily
+    buckets in tests."""
     now = now or datetime.now().astimezone()
     summary = _last_with(responses.get(DEEPSEEK_SUMMARY_FRAGMENT) or [],
                          "data", "biz_data")
@@ -110,16 +138,14 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
                            "data", "biz_data", "data")
     today_start = int(now.replace(hour=0, minute=0, second=0,
                                   microsecond=0).timestamp())
-    month_cost = today_cost = 0.0
+    today_cost = 0.0
     for group in cost_body or []:
         for series in group.get("series") or []:
             for bucket in series.get("buckets") or []:
-                cost = float(bucket.get("cost", 0))
-                month_cost += cost
                 if bucket.get("time", 0) >= today_start:
-                    today_cost += cost
-    if month_cost:
-        note_parts.append(f"tdy {today_cost:,.2f}")
+                    today_cost += float(bucket.get("cost", 0))
+    if cost_body:
+        note_parts.append(f"tdy ¥{today_cost:,.2f}")
 
     amount_biz = _last_with(responses.get(DEEPSEEK_AMOUNT_FRAGMENT) or [],
                             "data", "biz_data")
@@ -128,14 +154,16 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
         model = series.get("model", "?")
         for bucket in series.get("buckets") or []:
             usage = bucket.get("usage") or {}
-            per_model[model] = per_model.get(model, 0) + sum(
-                float(v) for k, v in usage.items() if "TOKEN" in k)
+            tokens = sum(float(v) for k, v in usage.items() if "TOKEN" in k)
+            if bucket.get("time", 0) >= today_start:
+                per_model[model] = per_model.get(model, 0) + tokens
     total_tokens = sum(per_model.values())
-    if total_tokens:
+    if amount_biz:
         flash = sum(v for k, v in per_model.items() if "flash" in k.lower())
         pro = sum(v for k, v in per_model.items() if "pro" in k.lower())
-        note_parts.append(f"{_tokens_fmt(total_tokens)} tok")
-        note_parts.append(f"F{flash / total_tokens * 100:.0f}%/P{pro / total_tokens * 100:.0f}%")
+        note_parts.append(f"tok {_tokens_fmt(total_tokens)}")
+        if total_tokens:
+            note_parts.append(f"F{flash / total_tokens * 100:.0f}%/P{pro / total_tokens * 100:.0f}%")
 
     return [SubscriptionItem(plan_name="DeepSeek", quota_total=0, quota_used=0,
                              balance=balance, unit="CNY",
@@ -143,14 +171,17 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
 
 
 def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
+    """The quota tab's own view: 5-hour and 7-day window remaining shares from
+    GetSubscriptionStats, the plan title and monthly credits from
+    GetSubscription.  The bar is the 5-hour remaining share (the window that
+    actually blocks mid-day), with its reset time parked at the bar's right."""
     bodies = responses.get(KIMI_SUBSCRIPTION_FRAGMENT) or []
+    stats_bodies = responses.get(KIMI_STATS_FRAGMENT) or []
 
-    title, rates, credits = "", {}, None
+    title, credits = "", None
     for body in reversed(bodies):
         if not title and (body.get("subscription") or {}).get("goods"):
             title = body["subscription"]["goods"].get("title", "")
-        if "ratelimitCode7d" in body:
-            rates = body
         if credits is None:
             balance = body.get("subscriptionBalance") or {}
             if balance.get("amountUsedRatio") is not None:
@@ -161,35 +192,32 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
                         credits = b
                         break
 
-    if not rates and credits is None:
-        raise ProviderError("[Kimi] subscription page returned no quota balance")
+    stats = {}
+    for body in reversed(stats_bodies):
+        r5 = body.get("ratelimitCode5h") or {}
+        # The 5h window omits ``ratio`` while it is fresh (nothing used yet);
+        # the quota tab shows that state as 0% used.
+        if "enabled" in r5:
+            stats = body
+            break
+    if not stats or credits is None:
+        raise ProviderError("[Kimi] quota page returned no window usage data")
 
-    # Remaining shares in percent; the 5-hour window exposes only its reset
-    # time, not a ratio.  No bar: the plan name, monthly and weekly remaining
-    # fill the card, and the reset times live on the note line.
-    note = []
-    weekly_left = None
-    if rates:
-        ratio7d = float(rates["ratelimitCode7d"]["ratio"])
-        weekly_left = (1 - ratio7d) * 100
-        note.append(f"5h {datetime.fromisoformat(rates['ratelimitCode5h']['resetTime'].replace('Z', '+00:00')):%H:%M}")
-        note.append(f"7d {_md(rates['ratelimitCode7d']['resetTime'])}")
-    if credits is not None:
-        note.append(f"exp {_md(credits['expireTime'])}")
+    r5_ratio = float(stats["ratelimitCode5h"].get("ratio", 0))
+    five_left = round((1 - r5_ratio) * 100)
+    note = [f"Mo {round((1 - float(credits['amountUsedRatio'])) * 100)}%",
+            f"Wk {round((1 - float(stats['ratelimitCode7d']['ratio'])) * 100)}%",
+            f"7d rst {_md(stats['ratelimitCode7d']['resetTime'])}",
+            f"exp {_md(credits['expireTime'])}"]
 
-    monthly_left = (1 - float(credits["amountUsedRatio"])) * 100 if credits else None
-    note.insert(0, f"Mo {monthly_left:.1f}%")
-    note.insert(1, f"Wk {weekly_left:.1f}%")
+    bar_text = ""
+    reset5h = stats["ratelimitCode5h"].get("resetTime")
+    if reset5h:
+        bar_text = f"rst {_local(reset5h):%H:%M}"
 
-    total = 100
-    used = round(weekly_left) if weekly_left is not None else round(monthly_left)
-    return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=total,
-                             quota_used=used, balance=0, unit="%",
-                             note="·".join(note), show_bar=False)]
-
-
-ALIYUN_USAGE_FRAGMENT = "tokenplan/personal/api/v2/usage"
-ALIYUN_SUBSCRIPTION_FRAGMENT = "tokenplan/personal/api/v2/subscription"
+    return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=100,
+                             quota_used=five_left, balance=0, unit="%",
+                             note=" ".join(note), bar_text=bar_text)]
 
 
 def parse_aliyun(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
@@ -226,12 +254,16 @@ RECIPES: dict[str, Recipe] = {
         expect=(DEEPSEEK_SUMMARY_FRAGMENT, DEEPSEEK_COST_FRAGMENT,
                 DEEPSEEK_AMOUNT_FRAGMENT),
         parse=parse_deepseek,
+        replay=lambda _h: _deepseek_replay_urls(datetime.now().astimezone()),
         login_hint="登录 DeepSeek 开放平台（手机验证码或微信扫码）",
     ),
     "kimi-web": Recipe(
         start_url="https://www.kimi.com/membership/subscription?tab=quota",
-        expect=(KIMI_SUBSCRIPTION_FRAGMENT,),
+        expect=(KIMI_SUBSCRIPTION_FRAGMENT, KIMI_STATS_FRAGMENT),
         parse=parse_kimi,
+        replay=lambda _h: ((
+            "https://www.kimi.com/apiv2/kimi.gateway.membership.v2"
+            ".MembershipService/GetSubscriptionStats", "POST", "{}"),),
         login_hint="登录 www.kimi.com（扫码后进入会员页）",
     ),
     "aliyun-web": Recipe(
@@ -283,19 +315,13 @@ def _edge_executable() -> str:
 def _port_open(port: int) -> bool:
     import socket
 
-    try:
-        import socket as s
-        with s.create_connection(("127.0.0.1", port), timeout=0.3):
-            return True
-    except OSError:
-        return False
+    with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+        return True
 
 
 def _ensure_cdp_browser(name: str, recipe: Recipe, profile: Path,
                         on_screen: bool) -> int:
     """Start the provider's standalone Edge if it is not already running."""
-    import subprocess
-
     port = _cdp_port(name)
     if _port_open(port):
         return port
@@ -322,14 +348,53 @@ def _connect(name: str):
     return pw, browser, context
 
 
+# All Playwright operations run on one dedicated thread: sync Playwright
+# objects are bound to the thread that created them.
 _PW_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="epd-playwright")
 
 
 async def _pw_run(fn, *args) -> list[SubscriptionItem]:
-    """Run one Playwright operation on the single browser thread: sync
-    Playwright objects are bound to the thread that created them, and the
-    standalone browser must always be touched from the same one."""
     return await asyncio.wrap_future(_PW_POOL.submit(fn, *args))
+
+
+def _run_replays(page, recipe: Recipe, captured: dict[str, Any],
+                 auth_headers: dict[str, str]) -> None:
+    """Re-fetch selected endpoints from the page's own context - its cookies
+    plus the in-memory Authorization header the SPA attaches - and file the
+    bodies as extra captures.
+
+    A replay entry is a URL, or a ``(url, method, body)`` tuple for the
+    POST-style gateways.  Needed because some of these calls fire once per
+    page mount and are then served from the SPA's cache, so a reload alone
+    does not re-trigger them."""
+    import json as _json
+
+    if not recipe.replay:
+        return
+    # The SPA attaches its in-memory Bearer token on the requests it fires
+    # once its bundle boots; replaying before that yields 401s, so wait for
+    # the token to show up (bounded - if it never does, the replays are
+    # harmless and the natural capture decides).
+    deadline = time.monotonic() + 8
+    while "authorization" not in auth_headers and time.monotonic() < deadline:
+        page.wait_for_timeout(250)
+    auth = auth_headers.get("authorization", "")
+    for entry in recipe.replay(auth_headers):
+        url, method, body = (entry, "GET", None) if isinstance(entry, str) else entry
+        try:
+            text = page.evaluate(
+                "async ([u, m, b, a]) => await (await fetch(u, {method: m,"
+                " credentials: 'include',"
+                " headers: {...(a ? {authorization: a} : {}),"
+                "          ...(b ? {'content-type': 'application/json'} : {})},"
+                " body: b})).text()",
+                [url, method, body, auth])
+            parsed = _json.loads(text)
+            for fragment in recipe.expect:
+                if fragment in url:
+                    captured.setdefault(fragment, []).append(parsed)
+        except Exception:
+            pass
 
 
 def _headless_fetch(recipe: Recipe, profile: Path, wait_s: float) -> list[SubscriptionItem]:
@@ -341,6 +406,7 @@ def _headless_fetch(recipe: Recipe, profile: Path, wait_s: float) -> list[Subscr
     when the data is real, and one reload is thrown in midway.
     """
     captured: dict[str, Any] = {}
+    auth_headers: dict[str, str] = {}
     last_error: ProviderError | None = None
 
     def on_response(resp) -> None:
@@ -351,6 +417,10 @@ def _headless_fetch(recipe: Recipe, profile: Path, wait_s: float) -> list[Subscr
                 except Exception:       # non-JSON or empty body: keep waiting
                     pass
 
+    def on_request(req) -> None:
+        if "authorization" in req.headers:
+            auth_headers.setdefault("authorization", req.headers["authorization"])
+
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             str(profile), channel=DEFAULT_CHANNEL, headless=True,
@@ -358,7 +428,9 @@ def _headless_fetch(recipe: Recipe, profile: Path, wait_s: float) -> list[Subscr
         )
         page = context.new_page()
         page.on("response", on_response)
+        page.on("request", on_request)
         page.goto(recipe.start_url, wait_until="domcontentloaded")
+        _run_replays(page, recipe, captured, auth_headers)
 
         remaining, reloaded = wait_s, False
         while remaining > 0:
@@ -387,11 +459,24 @@ def _capture_and_parse(recipe: Recipe, profile: Path, wait_s: float) -> list[Sub
     raise last_error
 
 
+def _park_offscreen(context, page) -> None:
+    """Move the real window far off-screen once the user is signed in."""
+    try:
+        cdp = context.new_cdp_session(page)
+        window_id = cdp.send("Browser.getWindowForTarget")["windowId"]
+        cdp.send("Browser.setWindowBounds",
+                 {"windowId": window_id,
+                  "bounds": {"left": -32000, "top": -32000, "windowState": "normal"}})
+    except Exception:
+        pass
+
+
 def _cdp_fetch(recipe: Recipe, name: str, wait_s: float) -> list[SubscriptionItem]:
     """One fetch through the resident standalone browser."""
     _ensure_cdp_browser(name, recipe, _profile_dir(name), on_screen=False)
     pw, _browser, context = _connect(name)
     captured: dict[str, list[dict[str, Any]]] = {}
+    auth_headers: dict[str, str] = {}
     last_error: ProviderError | None = None
 
     def on_response(resp) -> None:
@@ -402,10 +487,17 @@ def _cdp_fetch(recipe: Recipe, name: str, wait_s: float) -> list[SubscriptionIte
                 except Exception:
                     pass
 
+    def on_request(req) -> None:
+        if "authorization" in req.headers:
+            auth_headers.setdefault("authorization", req.headers["authorization"])
+
     page = context.new_page()
     try:
         page.on("response", on_response)
+        page.on("request", on_request)
         page.goto(recipe.start_url, wait_until="domcontentloaded")
+        _run_replays(page, recipe, captured, auth_headers)
+
         remaining, reloaded = wait_s, False
         while remaining > 0:
             page.wait_for_timeout(500)
@@ -536,8 +628,8 @@ def open_login(provider_type: str, timeout_s: float = 540.0,
                headless: bool = True) -> bool:
     """Open the provider's page headed and wait for the user to sign in.
 
-    On success the window parks itself off-screen and stays running for later
-    fetches.  If a resident browser is already signed in, this is a no-op.
+    Headless providers close the window once signed in; session-cookie
+    consoles keep their standalone browser running and park it off-screen.
     """
     recipe = RECIPES.get(provider_type)
     if recipe is None:
@@ -567,6 +659,8 @@ class _WebProviderBase(ProviderBase):
         if headless:
             return await _pw_run(_capture_and_parse, recipe, profile, wait_s)
         return await _pw_run(_cdp_fetch, recipe, name, wait_s)
+
+
 def _make(name: str) -> type[ProviderBase]:
     impl = RECIPES[name]
 

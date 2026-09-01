@@ -22,6 +22,7 @@ class SubscriptionItem:
     unit: str           # "req", "tkn", "CNY", "%", …
     note: str = ""      # extra context for the usage line (expiry, lifetime spend, …)
     show_bar: bool = True   # False: render this card without a progress bar
+    bar_text: str = ""      # when set, the bar shortens and this text sits at its right
 
 
 class ProviderBase(ABC):
