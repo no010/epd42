@@ -158,7 +158,10 @@ def usage_line(item) -> str:
     """One readable line per item.  Quota and balance never crowd each other."""
     parts = []
     if item.quota_total:
-        parts.append(f"{item.quota_used:,} / {item.quota_total:,} {item.unit}")
+        if item.unit == "%":
+            parts.append(f"{item.quota_used / item.quota_total * 100:.1f}%")
+        else:
+            parts.append(f"{item.quota_used:,} / {item.quota_total:,} {item.unit}")
     elif item.quota_used:
         parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:

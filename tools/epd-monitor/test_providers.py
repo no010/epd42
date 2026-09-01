@@ -105,37 +105,52 @@ def test_webquota_parsers() -> None:
     print("web-quota parsers (captured 2026-09-01)")
     from providers.webquota import parse_aliyun, parse_deepseek, parse_kimi
 
-    ds = parse_deepseek({"code": 0, "msg": "", "data": {"biz_code": 0, "biz_msg": "",
+    ds_good = {"code": 0, "msg": "", "data": {"biz_code": 0, "biz_msg": "",
         "biz_data": {
             "normal_wallets": [{"currency": "CNY", "balance": "59.1114450400000000",
                                 "token_estimation": "0"}],
             "bonus_wallets": [{"currency": "CNY", "balance": "0", "token_estimation": "0"}],
             "total_costs": [{"currency": "CNY", "amount": "271.1589545600000000"}],
-        }}})
+        }}}
+    ds = parse_deepseek({"users/get_user_summary": [{"code": 0, "data": None}, ds_good]})
     check(ds[0].balance == 5911 and ds[0].unit == "CNY",
-          f"DeepSeek balance parses to cents ({ds[0].balance})")
+          "DeepSeek skips an empty pre-auth body and parses the real wallet")
     check(ds[0].note == "累计 ¥271.16", "and carries the lifetime spend as a note")
 
-    kimi = parse_kimi({"subscription": {"goods": {"title": "Allegretto"}},
-                       "balances": [{"feature": "FEATURE_OMNI", "unit": "UNIT_CREDIT",
-                                     "amountUsedRatio": 0.2743,
-                                     "expireTime": "2026-09-25T01:22:33.648851Z"}]})
+    kimi = parse_kimi({"MembershipService/GetSubscription": [
+        {"subscription": {"goods": {"title": "Allegretto"}},
+         "balances": [{"feature": "FEATURE_OMNI", "unit": "UNIT_CREDIT",
+                       "amountUsedRatio": 0.2743,
+                       "expireTime": "2026-09-25T01:22:33.648851Z"}]},
+        {"ratelimitCode5h": {"enabled": True, "resetTime": "2026-09-01T10:22:33Z"},
+         "ratelimitCode7d": {"ratio": 0.3785, "enabled": True,
+                             "resetTime": "2026-09-05T01:22:33Z"},
+         "subscriptionBalance": {"feature": "FEATURE_OMNI",
+                                 "amountUsedRatio": 0.2743,
+                                 "kimiCodeUsedRatio": 0.2466,
+                                 "expireTime": "2026-09-25T01:22:33.648851Z"}},
+    ]})
     check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
-    check((kimi[0].quota_total, kimi[0].quota_used, kimi[0].unit) == (10_000, 2_743, "%"),
-          "the used ratio becomes a per-ten-thousand quota for the bar")
-    check(kimi[0].note == "09-25 到期", "the expiry becomes a note")
+    check((kimi[0].quota_total, kimi[0].quota_used, kimi[0].unit) == (1000, 378, "%"),
+          "the bar is the 7-day coding window (37.8%)")
+    check("credits 27.4%" in kimi[0].note and "09-25 到期" in kimi[0].note
+          and "7天重置 09-05" in kimi[0].note,
+          f"credits, expiry and window reset land in the note: {kimi[0].note!r}")
 
     aliyun = parse_aliyun({
-        "tokenplan/personal/api/v2/usage": {"code": "200", "data": {"DataV2": {"data": {
-            "code": "SUCCESS", "data": {"per1WeekResetTime": 1788747060000,
-                                        "per1WeekPercentage": 0.009919287124999999}}}}},
-        "tokenplan/personal/api/v2/subscription": {"code": "200", "data": {"DataV2": {"data": {
-            "code": "SUCCESS", "data": {"instanceCode": "sfm_tokenplansolo_public_cn-ofv4xapet04",
-                                        "specCode": "pro", "remainingDays": 20,
-                                        "status": "VALID"}}}}},
+        "tokenplan/personal/api/v2/usage": [
+            {"code": "200", "data": {"DataV2": {"data": {"code": "SUCCESS", "data": {}}}}},
+            {"code": "200", "data": {"DataV2": {"data": {
+                "code": "SUCCESS", "data": {"per1WeekResetTime": 1788747060000,
+                                            "per1WeekPercentage": 0.009919287124999999}}}}}],
+        "tokenplan/personal/api/v2/subscription": [
+            {"code": "200", "data": {"DataV2": {"data": {
+                "code": "SUCCESS", "data": {"instanceCode": "sfm_tokenplansolo_public_cn-ofv4xapet04",
+                                            "specCode": "pro", "remainingDays": 20,
+                                            "status": "VALID"}}}}}],
     })
-    check((aliyun[0].quota_total, aliyun[0].quota_used, aliyun[0].unit) == (10_000, 99, "%"),
-          "the weekly percentage becomes the bar")
+    check((aliyun[0].quota_total, aliyun[0].quota_used, aliyun[0].unit) == (1000, 10, "%"),
+          "the weekly percentage becomes the bar at 0.1% resolution")
     check(aliyun[0].note == "pro·剩20天", "the tier and remaining days become a note")
 
 

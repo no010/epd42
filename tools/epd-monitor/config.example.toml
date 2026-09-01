@@ -74,8 +74,9 @@ api_key = "..."        # API key from open.bigmodel.cn
 #   uv run python epd_monitor.py login --provider aliyun-web     # Token Plan 周额度 + 剩余天数
 #
 # Profiles live in tools/epd-monitor/profiles/ (gitignored: they hold session
-# cookies). Options per provider: headed = true (escape hatch for consoles
-# that detect headless browsers), wait_seconds = 45.
+# cookies). Options per provider: headless = false (escape hatch: some consoles,
+# e.g. Bailian's anti-bot, serve headless browsers an unauthenticated page - the
+# fetch then runs in a real window parked off-screen) and wait_seconds = 45.
 [[providers]]
 type = "deepseek-web"
 name = "DeepSeek"

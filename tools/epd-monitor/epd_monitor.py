@@ -264,7 +264,9 @@ def main() -> int:
             if not args.provider:
                 print(f"login needs --provider, one of: {sorted(RECIPES)}", file=sys.stderr)
                 return 1
-            open_login(args.provider)
+            own = next((p for p in cfg.get("providers", [])
+                        if p.get("type") == args.provider), {})
+            open_login(args.provider, headless=bool(own.get("headless", True)))
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except RuntimeError as exc:
