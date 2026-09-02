@@ -168,7 +168,9 @@ static uint32_t epd_config_clear(epd_config_t *cfg)
 static uint32_t epd_config_save(epd_config_t *cfg)
 {
     uint16_t const len = (sizeof(epd_config_t) + sizeof(uint32_t) - 1) / sizeof(uint32_t);
-    return fs_store(&fs_config, fs_config.p_start_addr, (uint32_t *) cfg, len, NULL);
+    uint32_t buf[len];
+    memcpy(buf, cfg, sizeof(epd_config_t));
+    return fs_store(&fs_config, fs_config.p_start_addr, buf, len, NULL);
 }
 
 /** Packed-bit streaming. The refresh deadline is a wedge guard, not a
