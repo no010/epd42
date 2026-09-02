@@ -1,0 +1,90 @@
+name: Release subscription monitor firmware
+
+on:
+  push:
+    tags:
+      - "v*-submon*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: nRF51822_xxAB
+            artifact: epd42-submon-bw
+          - target: nRF51802_xxAA
+            artifact: epd42-submon-bwr
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Cache APT packages
+        uses: actions/cache@v5
+        with:
+          path: /var/cache/apt/archives
+          key: apt-arm-gcc-${{ runner.os }}
+
+      - name: Install ARM GCC
+        run: sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
+      - name: Build firmware
+        run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
+
+      - name: Collect artifact
+        run: |
+          mkdir -p dist
+          cp build/${{ matrix.target }}/${{ matrix.artifact }}.hex dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Subscription Monitor ${{ github.ref_name }}"
+          body: |
+            ## EPD42 Subscription Monitor Firmware
+
+            Firmware for the subscription usage display on the 4.2-inch e-ink
+            panel. The firmware keeps no font and no framebuffer: the PC
+            companion (`tools/epd-monitor`) composes the 400x300 frame and
+            streams it as packed bits, and the device stays advertising so a
+            push can happen at any time.
+
+            ### Files
+            - `epd42-submon-bw.hex` — nRF51822_xxAB (128 KB, S110, BW display)
+            - `epd42-submon-bwr.hex` — nRF51802_xxAA (256 KB, S130, BW or BWR display)
+
+            ### Usage
+            Flash with `nrfjprog` or merge with the appropriate SoftDevice before flashing:
+            - nRF51822_xxAB: S110 v8 (`s110_nrf51_8.0.0_softdevice.hex`)
+            - nRF51802_xxAA: S130 v2 (`s130_nrf51_2.0.1_softdevice.hex`)
+          files: |
+            dist/epd42-submon-bw/*.hex
+            dist/epd42-submon-bwr/*.hex
+          draft: false
+          prerelease: false

@@ -188,3 +188,51 @@ void EPD_4IN2_Sleep(void)
 	EPD_4IN2_SendCommand(0x07); // DEEP_SLEEP
 	EPD_4IN2_SendData(0XA5);
 }
+
+/******************************************************************************
+function :	Host-fed streaming.  The image goes to 0x13 (NEW); 0x10 (OLD) is
+		filled here first.
+parameter:
+Info:	In B/W mode the refresh is the OLD -> NEW transition, so both SRAMs must
+		hold data.  An unwritten SRAM keeps its power-on contents and every
+		pixel is then driven randomly - a screen full of noise, as observed on
+		hardware.  The host sends only the image, so OLD is filled with 0x00
+		here, matching EPD_4IN2_Display().  Plane 1 lets a host supply the OLD
+		plane itself when it wants to control the transition.
+******************************************************************************/
+uint16_t EPD_4IN2_StreamPlaneBytes(void)
+{
+    return EPD_4IN2_PLANE_BYTES;
+}
+
+void EPD_4IN2_StreamBegin(uint8_t plane)
+{
+    if (plane != 1)
+    {
+        EPD_4IN2_SendCommand(0x10);
+        for (uint16_t i = 0; i < EPD_4IN2_PLANE_BYTES; i++)
+        {
+            EPD_4IN2_SendData(0x00);
+        }
+        EPD_4IN2_SendCommand(0x13);
+    }
+    else
+    {
+        EPD_4IN2_SendCommand(0x10);
+    }
+}
+
+void EPD_4IN2_StreamWrite(const uint8_t *buffer, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        EPD_4IN2_SendData(buffer[i]);
+    }
+}
+
+UBYTE EPD_4IN2_TurnOnDisplayTimeout(UDOUBLE timeout_ms)
+{
+    EPD_4IN2_SendCommand(0x12);
+    DEV_Delay_ms(100);
+    return DEV_ReadBusyTimeout(1, 10, timeout_ms);
+}

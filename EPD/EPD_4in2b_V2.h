@@ -45,4 +45,20 @@ void EPD_4IN2B_V2_SendCommand(UBYTE Reg);
 void EPD_4IN2B_V2_SendData(UBYTE Data);
 void EPD_4IN2B_V2_TurnOnDisplay(void);
 
+/**
+ * Host-fed streaming, one packed plane at a time: plane 0 is RAM command
+ * 0x10 (black), plane 1 is 0x13 (red) - the order used by
+ * EPD_4IN2B_V2_Display().  Bytes are forwarded verbatim, so the host packs
+ * the panel's own polarity (1 = white, MSB = leftmost).  This controller
+ * has no cursor command, so a truncated plane can only be recovered by
+ * running Init() again before the next frame.
+ */
+#define EPD_4IN2B_V2_PLANES        2
+#define EPD_4IN2B_V2_PLANE_BYTES   ((EPD_4IN2B_V2_WIDTH / 8) * EPD_4IN2B_V2_HEIGHT)
+
+uint16_t EPD_4IN2B_V2_StreamPlaneBytes(void);
+void EPD_4IN2B_V2_StreamBegin(uint8_t plane);
+void EPD_4IN2B_V2_StreamWrite(const uint8_t *buffer, uint16_t length);
+UBYTE EPD_4IN2B_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms);
+
 #endif

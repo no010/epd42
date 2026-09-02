@@ -40,18 +40,24 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Cache APT packages
+        uses: actions/cache@v5
+        with:
+          path: /var/cache/apt/archives
+          key: apt-arm-gcc-${{ runner.os }}
 
       - name: Install ARM GCC
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        run: sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        env:
+          DEBIAN_FRONTEND: noninteractive
 
       - name: Build firmware
         run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
 
       - name: Upload firmware artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: |

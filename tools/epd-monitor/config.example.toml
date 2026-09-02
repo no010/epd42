@@ -1,0 +1,120 @@
+# EPD Monitor — example configuration
+# Copy this file to config.toml and fill in your API keys.
+#
+# The screen is composed here on the PC: providers are polled, the result is
+# drawn into a 400x300 monochrome frame, and the packed bits are streamed to
+# the panel. The device holds no font and no framebuffer.
+
+# ── Device settings ─────────────────────────────────────────────────────────
+# BLE advertisement name: main.c builds "NRF_EPD_" + the last two MAC bytes.
+# Run `python epd_monitor.py scan` to see what is actually advertising.
+device_name = "NRF_EPD"
+
+# Optional: fixed BLE address / UUID (skips scanning, faster connection)
+# macOS uses UUIDs like "12345678-1234-1234-1234-1234567890AB"
+# Linux/Windows use MAC addresses like "AA:BB:CC:DD:EE:FF"
+device_address = ""
+
+# How often (seconds) `daemon` fetches and pushes a new frame. Purely
+# host-side: the device stays advertising and cannot refresh itself, because an
+# nRF51 on the synthetic LF clock cannot wake from sleep on a timer.
+refresh_interval = 1800   # 30 minutes
+
+# BLE scan timeout in seconds
+scan_timeout = 15
+
+# Log level: DEBUG, INFO, WARNING, ERROR
+log_level = "INFO"
+
+# ── Display ─────────────────────────────────────────────────────────────────
+# Heading drawn across the top of the frame.
+title = "SUB MONITOR"
+
+# TTF for the frame. Empty picks DejaVuSansMono, then Pillow's built-in font.
+font_path = ""
+
+# Stream with write-without-response: roughly 3x faster, but a dropped packet
+# is caught only by the end-of-plane checksum, which costs a whole retransmit.
+fast_write = false
+
+# ── Providers ──────────────────────────────────────────────────────────────
+# Up to 3 provider entries are displayed on screen (EPD has 3 item slots).
+# Comment out providers you don't use.
+
+# ─── Kimi / Moonshot AI ────────────────────────────────────────────────────
+[[providers]]
+type    = "kimi"
+name    = "Kimi"
+api_key = "sk-..."
+# Optional: switch to international endpoint
+# base_url = "https://api.moonshot.ai"
+
+# ─── DeepSeek ──────────────────────────────────────────────────────────────
+[[providers]]
+type    = "deepseek"
+name    = "DeepSeek"
+api_key = "sk-..."
+
+# ─── Zhipu AI (智谱AI) — Coding Plan / subscription accounts ───────────────
+[[providers]]
+type    = "zhipu"
+name    = "Zhipu"
+api_key = "..."        # API key from open.bigmodel.cn
+# Optional: international endpoint
+# base_url = "https://api.z.ai"
+
+# ─── Web-session providers (登录态，信息最全，无需任何 key) ─────────────────
+# Each of these drives a persistent, logged-in browser profile (your local
+# Edge) to the console page and reads the same responses the page shows.
+# One-time setup per provider - a headed window opens, you sign in, it closes
+# itself once the page loads your data:
+#
+#   uv run python epd_monitor.py login --provider deepseek-web   # 余额 + 累计消费
+#   uv run python epd_monitor.py login --provider kimi-web       # 会员套餐额度 + 到期日
+#   uv run python epd_monitor.py login --provider aliyun-web     # Token Plan 周额度 + 剩余天数
+#
+# Profiles live in tools/epd-monitor/profiles/ (gitignored: they hold session
+# cookies). Options per provider: headless = false (escape hatch: some consoles,
+# e.g. Bailian's anti-bot, serve headless browsers an unauthenticated page - the
+# fetch then runs in a real window parked off-screen) and wait_seconds = 45.
+[[providers]]
+type = "deepseek-web"
+name = "DeepSeek"
+
+# ─── Aliyun resource packages (阿里云百炼 Token Plan / 资源包) ──────────────
+# Queries BSS OpenAPI QueryResourcePackageInstances, so it needs an AccessKey
+# pair instead of an api_key. Create a RAM user with only bss:DescribeInstances
+# (read-only billing) and use its keys - a primary-account key can spend money.
+# `keyword` filters packages whose name/type contains it, which is how you pick
+# the token plan out of everything the account owns.
+[[providers]]
+type              = "aliyun"
+name              = "Aliyun"
+access_key_id     = "LTAI..."
+access_key_secret = "..."
+keyword           = "token"    # optional; omit to show every Available package
+
+# ─── OpenAI / ChatGPT ──────────────────────────────────────────────────────
+# Requires an Admin API key (sk-admin-...) with api.usage.read scope.
+# Create one at: platform.openai.com/settings/organization/api-keys
+[[providers]]
+type                = "openai"
+name                = "ChatGPT"
+api_key             = "sk-admin-..."
+monthly_budget_usd  = 20.0    # Optional: used for progress bar on EPD
+
+# ─── Generic / custom provider ─────────────────────────────────────────────
+# Use this template for any provider with a simple GET balance endpoint.
+#
+# [[providers]]
+# type              = "generic"
+# name              = "Claude"
+# url               = "https://api.anthropic.com/v1/credits"
+# auth_header       = "x-api-key"
+# auth_prefix       = ""          # set to "" to send raw key without "Bearer"
+# api_key           = "sk-ant-..."
+# balance_field     = "credits_remaining"   # dotted path into JSON response
+# balance_scale     = 100                   # multiply to get integer cents
+# quota_total_field = ""
+# quota_used_field  = ""
+# unit              = "USD"

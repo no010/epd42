@@ -1,0 +1,17 @@
+[project]
+name = "epd-monitor"
+version = "0.1.0"
+description = "PC companion for the EPD42 e-ink display: composes the 400x300 frame and streams it as packed bits over BLE"
+requires-python = ">=3.10"
+dependencies = [
+    "bleak>=0.22",          # BLE client; discover(return_adv=True) for RSSI on bleak 3.x
+    "httpx>=0.27",          # provider API calls
+    "pillow>=10",           # the PC does the drawing, the device does not
+    "playwright>=1.62.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[tool.uv]
+# Flat scripts that import each other by module name (render, protocol, providers).
+# Packaging them would only add an install step, so the project just manages the env.
+package = false

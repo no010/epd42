@@ -25,6 +25,7 @@
 #include "app_error.h"
 #include "app_timer.h"
 #include "EPD_ble.h"
+#include "DEV_Config.h"
 #define NRF_LOG_MODULE_NAME "main"
 #include "nrf_log.h"
 #include "nrf_log_ctrl.h"
@@ -33,17 +34,24 @@
 #define PERIPHERAL_LINK_COUNT           1                                               /**< Number of peripheral links used by the application. When changing this number remember to adjust the RAM settings*/
 
 #define DEVICE_NAME                      "NRF_EPD"                                      /**< Name of device. Will be included in the advertising data. */
-#define APP_ADV_INTERVAL                 300                                            /**< The advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
-#define APP_ADV_TIMEOUT_IN_SECONDS       180                                            /**< The advertising timeout (in units of seconds). */
+#define APP_ADV_INTERVAL                 300                                            /**< The fast advertising interval (in units of 0.625 ms. This value corresponds to 40 ms). */
+#define APP_ADV_TIMEOUT_IN_SECONDS       30                                             /**< How long to advertise fast before dropping to slow advertising (seconds). */
+#define APP_ADV_SLOW_INTERVAL            2048                                           /**< The slow advertising interval (in units of 0.625 ms. This value corresponds to 1.28 s). */
+#define APP_ADV_SLOW_TIMEOUT_IN_SECONDS  0                                              /**< Slow advertising never times out: the device must stay reachable for the host. */
 #define APP_TIMER_PRESCALER              0                                              /**< Value of the RTC1 PRESCALER register. */
 #define APP_TIMER_OP_QUEUE_SIZE          4                                              /**< Size of timer operation queues. */
 
+/* A full 400x300 packed plane is 15000 bytes, one 19-byte GATT write per connection
+ * event, so the interval decides whether a refresh takes 6 s or 24 s. */
 #define MIN_CONN_INTERVAL                MSEC_TO_UNITS(7.5, UNIT_1_25_MS)               /**< Minimum connection interval (7.5 ms) */
-#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(30, UNIT_1_25_MS)                /**< Maximum connection interval (30 ms). */
+#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(15, UNIT_1_25_MS)                /**< Maximum connection interval (15 ms). */
 #define SLAVE_LATENCY                    6                                              /**< Slave latency. */
 #define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(430, UNIT_10_MS)                 /**< Connection supervisory timeout (430 ms). */
 
-#define FIRST_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(5000, APP_TIMER_PRESCALER)     /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (5 seconds). */
+/* A plane now goes out in well under a second, so negotiate the fast interval
+ * almost immediately: some centrals connect at 30-45 ms regardless of the
+ * advertised PPCP, and a 5 s delay would spend the whole first push there. */
+#define FIRST_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(500, APP_TIMER_PRESCALER)      /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (500 ms). */
 #define NEXT_CONN_PARAMS_UPDATE_DELAY    APP_TIMER_TICKS(30000, APP_TIMER_PRESCALER)    /**< Time between each call to sd_ble_gap_conn_param_update after the first call (30 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT     3                                              /**< Number of attempts before giving up the connection parameter negotiation. */
 
@@ -321,6 +329,16 @@ static void sys_evt_dispatch(uint32_t sys_evt)
 static void ble_stack_init(void)
 {
     uint32_t err_code;
+    ble_enable_params_t ble_enable_params;
+
+#ifdef S110
+    // S110 (SDK10 API): clock source is an enum value, not a struct pointer.
+    SOFTDEVICE_HANDLER_INIT(NRF_CLOCK_LFCLKSRC_SYNTH_250_PPM, NULL);
+
+    memset(&ble_enable_params, 0, sizeof(ble_enable_params));
+    err_code = sd_ble_enable(&ble_enable_params);
+    APP_ERROR_CHECK(err_code);
+#else
     nrf_clock_lf_cfg_t  clock_lf_cfg = {
         .source        = NRF_CLOCK_LF_SRC_SYNTH,
         .rc_ctiv       = 0,
@@ -331,7 +349,6 @@ static void ble_stack_init(void)
     // Initialize the SoftDevice handler module.
     SOFTDEVICE_HANDLER_INIT(&clock_lf_cfg, NULL);
 
-    ble_enable_params_t ble_enable_params;
     err_code = softdevice_enable_get_default_config(CENTRAL_LINK_COUNT,
                                                     PERIPHERAL_LINK_COUNT,
                                                     &ble_enable_params);
@@ -339,10 +356,11 @@ static void ble_stack_init(void)
 
     // Check the ram settings against the used number of links
     CHECK_RAM_START_ADDR(CENTRAL_LINK_COUNT,PERIPHERAL_LINK_COUNT);
-    
+
     // Enable BLE stack.
     err_code = softdevice_enable(&ble_enable_params);
     APP_ERROR_CHECK(err_code);
+#endif
 
     // Subscribe for BLE events.
     err_code = softdevice_ble_evt_handler_set(ble_evt_dispatch);
@@ -353,7 +371,8 @@ static void ble_stack_init(void)
     APP_ERROR_CHECK(err_code);
 }
 
-// Set BW Config to HIGH.
+#ifndef S110
+// Set BW Config to HIGH (S130 only).
 static void ble_options_set(void)
 {
     uint32_t err_code;
@@ -367,6 +386,7 @@ static void ble_options_set(void)
     err_code = sd_ble_opt_set(BLE_COMMON_OPT_CONN_BW, &ble_opt);
     APP_ERROR_CHECK(err_code);
 }
+#endif
 
 /**@brief Function for initializing the Advertising functionality.
  */
@@ -381,7 +401,7 @@ static void advertising_init(void)
     memset(&advdata, 0, sizeof(advdata));
     advdata.name_type          = BLE_ADVDATA_FULL_NAME;
     advdata.include_appearance = false;
-    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_LIMITED_DISC_MODE;
+    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
     
     memset(&scanrsp, 0, sizeof(scanrsp));
     scanrsp.uuids_complete.uuid_cnt = sizeof(m_adv_uuids) / sizeof(m_adv_uuids[0]);
@@ -391,6 +411,9 @@ static void advertising_init(void)
     options.ble_adv_fast_enabled  = true;
     options.ble_adv_fast_interval = APP_ADV_INTERVAL;
     options.ble_adv_fast_timeout  = APP_ADV_TIMEOUT_IN_SECONDS;
+    options.ble_adv_slow_enabled  = true;
+    options.ble_adv_slow_interval = APP_ADV_SLOW_INTERVAL;
+    options.ble_adv_slow_timeout  = APP_ADV_SLOW_TIMEOUT_IN_SECONDS;
 
     err_code = ble_advertising_init(&advdata, &scanrsp, &options, on_adv_evt, NULL);
     APP_ERROR_CHECK(err_code);
@@ -417,13 +440,16 @@ int main(void)
 
     timers_init();
     ble_stack_init();
+#ifndef S110
     ble_options_set();
+#endif
     gap_params_init();
     services_init();
     advertising_init();
     conn_params_init();
 
     NRF_LOG_DEBUG("start..\n");
+
     err_code = ble_advertising_start(BLE_ADV_MODE_FAST);
     APP_ERROR_CHECK(err_code);
 

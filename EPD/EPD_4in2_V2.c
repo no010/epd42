@@ -220,3 +220,46 @@ void EPD_4IN2_V2_Sleep(void)
     EPD_4IN2_V2_SendData(0x01);
 	DEV_Delay_ms(200);
 }
+
+/******************************************************************************
+function :	Host-fed streaming, plane 0 = 0x24, plane 1 = 0x26
+parameter:
+Info:		Bytes are forwarded verbatim: the host packs the panel's own
+		polarity (1 = white).  The window and address counters are re-armed
+		per plane because they sit at the far corner after a full pass.
+
+		A black-and-white frame streams plane 0 only and leaves 0x26 alone.
+		The UC8176 just showed that an unwritten companion SRAM can render as
+		a wall of noise, but the SSD1683 datasheet is not in this repo and the
+		single-plane path is the only one observed working (html/js/main.js
+		does the same), so it is left as-is rather than guessed at.  If a V2
+		panel shows noise, fill 0x26 here the way EPD_4IN2_StreamBegin fills
+		its OLD plane.
+******************************************************************************/
+uint16_t EPD_4IN2_V2_StreamPlaneBytes(void)
+{
+    return EPD_4IN2_V2_PLANE_BYTES;
+}
+
+void EPD_4IN2_V2_StreamBegin(uint8_t plane)
+{
+    EPD_4IN2_V2_SetWindows(0, 0, EPD_4IN2_V2_WIDTH - 1, EPD_4IN2_V2_HEIGHT - 1);
+    EPD_4IN2_V2_SetCursor(0, 0);
+    EPD_4IN2_V2_SendCommand(plane == 0 ? 0x24 : 0x26);
+}
+
+void EPD_4IN2_V2_StreamWrite(const uint8_t *buffer, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        EPD_4IN2_V2_SendData(buffer[i]);
+    }
+}
+
+UBYTE EPD_4IN2_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms)
+{
+    EPD_4IN2_V2_SendCommand(0x22);
+    EPD_4IN2_V2_SendData(0xF7);
+    EPD_4IN2_V2_SendCommand(0x20);
+    return DEV_ReadBusyTimeout(0, 10, timeout_ms);
+}

@@ -46,4 +46,24 @@ void EPD_4IN2_SendCommand(UBYTE Reg);
 void EPD_4IN2_SendData(UBYTE Data);
 void EPD_4IN2_TurnOnDisplay(void);
 
+/**
+ * Host-fed streaming, one packed plane at a time.  The host composes the
+ * image, so the driver never buffers a frame: bytes arriving between
+ * StreamBegin() and the next StreamBegin()/StreamFinish() are pushed
+ * straight into the panel's RAM.
+ *
+ * Wire convention is the panel's own: 1 = white, 0 = black, MSB = leftmost.
+ * Plane 0 is RAM command 0x10, plane 1 is 0x13 (same order as
+ * EPD_4IN2_Display() and the web host).
+ *
+ * Init() must have run before the first StreamBegin() of a frame.
+ */
+#define EPD_4IN2_PLANES        2
+#define EPD_4IN2_PLANE_BYTES   ((EPD_4IN2_WIDTH / 8) * EPD_4IN2_HEIGHT)
+
+uint16_t EPD_4IN2_StreamPlaneBytes(void);
+void EPD_4IN2_StreamBegin(uint8_t plane);
+void EPD_4IN2_StreamWrite(const uint8_t *buffer, uint16_t length);
+UBYTE EPD_4IN2_TurnOnDisplayTimeout(UDOUBLE timeout_ms);
+
 #endif

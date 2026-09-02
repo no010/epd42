@@ -87,3 +87,15 @@ EventRecorderStub.scvd
 JLinkLog.txt
 
 *.PrjPcbStructure
+
+# uv / Python virtualenv
+.venv/
+
+# Local secrets: config.toml holds provider API keys, only the example is tracked
+tools/epd-monitor/config.toml
+
+# Frames and previews produced by epd_monitor.py
+tools/epd-monitor/preview.png
+
+# Playwright persistent login profiles (session cookies - never commit)
+tools/epd-monitor/profiles/

@@ -176,3 +176,51 @@ void EPD_4IN2B_V2_Sleep(void)
     EPD_4IN2B_V2_SendCommand(0X07);  	//deep sleep
     EPD_4IN2B_V2_SendData(0xA5);
 }
+
+/******************************************************************************
+function :	Host-fed streaming, plane 0 = 0x10 (black), plane 1 = 0x13 (red)
+parameter:
+Info:		Bytes are forwarded verbatim: the host packs the panel's own
+		polarity (1 = white).
+******************************************************************************/
+uint16_t EPD_4IN2B_V2_StreamPlaneBytes(void)
+{
+    return EPD_4IN2B_V2_PLANE_BYTES;
+}
+
+void EPD_4IN2B_V2_StreamBegin(uint8_t plane)
+{
+    EPD_4IN2B_V2_SendCommand(plane == 0 ? 0x10 : 0x13);
+}
+
+void EPD_4IN2B_V2_StreamWrite(const uint8_t *buffer, uint16_t length)
+{
+    for (uint16_t i = 0; i < length; i++)
+    {
+        EPD_4IN2B_V2_SendData(buffer[i]);
+    }
+}
+
+UBYTE EPD_4IN2B_V2_TurnOnDisplayTimeout(UDOUBLE timeout_ms)
+{
+    UDOUBLE waited;
+
+    EPD_4IN2B_V2_SendCommand(0x12); // DISPLAY_REFRESH
+    DEV_Delay_ms(100);
+
+    /* Same protocol as EPD_4IN2B_V2_ReadBusy(): the controller only reports
+     * its status in response to 0x71, and HIGH means idle. */
+    waited = 100;
+    do {
+        EPD_4IN2B_V2_SendCommand(0x71);
+        DEV_Delay_ms(50);
+        waited += 50;
+        if (waited > timeout_ms)
+        {
+            return 0;
+        }
+    } while (!(DEV_Digital_Read(EPD_BUSY_PIN)));
+
+    DEV_Delay_ms(50);
+    return 1;
+}
