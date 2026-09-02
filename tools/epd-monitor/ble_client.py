@@ -90,8 +90,12 @@ class EpdLink:
                            fast: bool = False) -> None:
         """Push one packed plane.  Only the final plane triggers a refresh."""
         # Refreshing between planes would make the device re-run the panel
-        # Init() for the next plane and erase what was just written.
-        flags = (protocol.FLAG_REFRESH | protocol.FLAG_SLEEP) if last else 0
+        # Init() for the next plane and erase what was just written.  No SLEEP
+        # flag: a panel put into deep sleep (0x07 0xA5) stopped taking later
+        # refresh commands on hardware, so it rests in hardware reset instead -
+        # DEV_Module_Exit() holds RST low on disconnect, and the next
+        # connection's rising edge plus Init()'s reset pulses wake it for sure.
+        flags = protocol.FLAG_REFRESH if last else 0
         encoded = protocol.packbits_encode(raw)
 
         await self._begin(index)
@@ -102,15 +106,22 @@ class EpdLink:
         elapsed = max(time.monotonic() - started, 1e-6)
 
         await self._write(protocol.end_request(raw, flags))
+        started = time.monotonic()
         self._check_status(await self._await_ack(protocol.CMD_STREAM_END), "STREAM_END")
+        # A real refresh holds BUSY for seconds; a no-op refresh (panel still
+        # asleep) acks almost immediately.  The gap is the diagnostic.
+        logger.info("end ack in %.2fs (refresh occupies the panel this long)",
+                    time.monotonic() - started)
         logger.info("plane %d: %d -> %d bytes (%.0f%%) in %.1fs, %d packets, %.1f kB/s",
                     index, len(raw), len(encoded), 100.0 * len(encoded) / len(raw),
                     elapsed, -(-len(encoded) // protocol.DATA_CHUNK),
                     len(encoded) / elapsed / 1024)
 
     async def _begin(self, index: int) -> None:
+        started = time.monotonic()
         await self._write(bytes([protocol.CMD_STREAM_BEGIN, index]))
         self._check_status(await self._await_ack(protocol.CMD_STREAM_BEGIN), "STREAM_BEGIN")
+        logger.info("begin ack in %.2fs (panel init inside)", time.monotonic() - started)
 
     async def stream_truncated(self, index: int, raw: bytes, fraction: float) -> int:
         """Send ``fraction`` of a plane, then END as if it were whole.
@@ -138,13 +149,6 @@ class EpdLink:
             await self._await_ack(protocol.CMD_STREAM_ABORT)
         except EpdError:
             logger.debug("abort was not acked", exc_info=True)
-
-    async def sleep(self) -> None:
-        """Power the panel down before disconnecting, as the web host does."""
-        try:
-            await self._write(bytes([protocol.CMD_SLEEP]))
-        except Exception:  # noqa: BLE001 - best effort, the link may be gone
-            logger.debug("panel sleep command failed", exc_info=True)
 
 
 async def _find_device(cfg: dict):
@@ -226,7 +230,6 @@ async def push_image(image, cfg: dict, *, fast: bool = False) -> None:
         except EpdError:
             await link.abort()
             raise
-        await link.sleep()
 
     logger.info("frame pushed")
 

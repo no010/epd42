@@ -225,8 +225,9 @@ def test_client_protocol() -> None:
     check(int.from_bytes(end[1:3], "little") == render.PLANE_BYTES
           and int.from_bytes(end[3:7], "little") == render.checksum(plane),
           "END declares the raw plane's length and sum, not the encoded ones")
-    check(end[7] == protocol.FLAG_REFRESH | protocol.FLAG_SLEEP,
-          "the last plane carries refresh and sleep")
+    check(end[7] == protocol.FLAG_REFRESH,
+          "the last plane carries refresh but no sleep - the panel rests in "
+          "hardware reset, which wakes reliably")
 
     fake = FakeGatt()
     asyncio.run(link_on(fake).stream_plane(0, plane, last=False))
