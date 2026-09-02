@@ -131,7 +131,8 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
 
     note_parts: list[str] = []
     costs = summary.get("total_costs") or []
-    extra = f"cum {float(costs[0].get('amount', 0)):,.0f}CNY" if costs else ""
+    # Same currency symbol on both numbers: the line reads "balance / lifetime".
+    extra = f"/ ¥{float(costs[0].get('amount', 0)):,.0f}" if costs else ""
 
     cost_body = _last_with(responses.get(DEEPSEEK_COST_FRAGMENT) or [],
                            "data", "biz_data", "data")
@@ -209,14 +210,16 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
             f"7d rst {_md(stats['ratelimitCode7d']['resetTime'])}",
             f"exp {_md(credits['expireTime'])}"]
 
-    bar_text = ""
+    # The 5h usage and its reset time share the metrics line; the bar below
+    # runs full width.
+    extra = ""
     reset5h = stats["ratelimitCode5h"].get("resetTime")
     if reset5h:
-        bar_text = f"rst {_local(reset5h):%H:%M}"
+        extra = f"rst {_local(reset5h):%H:%M}"
 
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=100,
                              quota_used=five_used, balance=0, unit="%",
-                             note=" ".join(note), bar_text=bar_text)]
+                             note=" ".join(note), extra=extra)]
 
 
 def parse_aliyun(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:

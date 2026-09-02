@@ -126,7 +126,7 @@ def test_webquota_parsers() -> None:
         "usage/by_api_key/amount": [ds_amount],
     }, now=noon)
     check(ds[0].balance == 5911, "DeepSeek balance parses to cents")
-    check(ds[0].extra == "cum 271CNY", "lifetime spend rides the metrics line")
+    check(ds[0].extra == "/ ¥271", "lifetime spend rides the metrics line, ¥ on both")
     for part in ("tdy ¥0.50", "tok 30.0M", "F67%/P33%"):
         check(part in ds[0].note, f"note carries {part!r}")
 
@@ -150,8 +150,9 @@ def test_webquota_parsers() -> None:
     check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
     check(kimi[0].quota_used == 7,
           "the bar is the 5-hour usage share (6.8% used)")
-    check(kimi[0].bar_text == "rst 18:22",
-          "the 5h reset time sits at the bar's right (local time)")
+    check(kimi[0].extra == "rst 18:22",
+          "the 5h reset time shares the metrics line (local time)")
+    check(kimi[0].bar_text == "", "the bar runs full width, no text at its right")
     for part in ("Mo 28%", "Wk 39%", "7d rst 09-05", "exp 09-25"):
         check(part in kimi[0].note, f"note carries {part!r}")
 
@@ -164,7 +165,7 @@ def test_webquota_parsers() -> None:
     })
     check(kimi_fresh[0].quota_used == 0,
           "a fresh 5h window (no ratio) reads as 0% used")
-    check(kimi_fresh[0].bar_text == "rst 23:22",
+    check(kimi_fresh[0].extra == "rst 23:22",
           "the fresh window still shows its reset time")
 
     aliyun = parse_aliyun({

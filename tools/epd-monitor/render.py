@@ -168,10 +168,11 @@ def usage_line(item) -> str:
         parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:
         parts.append(_balance_text(item))
+    line = "   ".join(parts)
     extra = getattr(item, "extra", "")
     if extra:
-        parts.append(extra)
-    return "   ".join(parts) or "no data"
+        line = f"{line} {extra}" if line else extra
+    return line or "no data"
 
 
 def line_font(text: str, ascii_font, cjk_font):
