@@ -20,7 +20,8 @@ class SubscriptionItem:
     quota_used: int     # Used quota; 0 if N/A
     balance: int        # Balance × 100 (integer cents/fen); 0 if N/A
     unit: str           # "req", "tkn", "CNY", "%", …
-    note: str = ""      # extra context for the usage line (expiry, lifetime spend, …)
+    note: str = ""      # extra context line under the metrics line
+    extra: str = ""     # text appended to the metrics line itself
     show_bar: bool = True   # False: render this card without a progress bar
     bar_text: str = ""      # when set, the bar shortens and this text sits at its right
 

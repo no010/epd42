@@ -392,10 +392,13 @@ def test_composition() -> None:
 
     check(image.size == (render.SCREEN_WIDTH, render.SCREEN_HEIGHT), "frame is 400x300")
     check(image.getpixel((0, layout.rule_row)) == 0, "the title rule spans the width")
-    check(image.getpixel((0, layout.stamp_row + 8)) == 255,
-          "the left margin beside the timestamp stays paper white")
+    top_right = image.crop((render.SCREEN_WIDTH // 2, 0,
+                            render.SCREEN_WIDTH, layout.rule_row)).getdata()
+    check(min(top_right) == 0, "the update stamp shares the title row, right-aligned")
+    check(image.getpixel((0, render.SCREEN_HEIGHT - 8)) == 255,
+          "the old bottom timestamp row is gone (bottom margin stays paper)")
     check(render.MAX_ITEMS == 3 and len(items) == 4,
-          "a fourth item is dropped, not drawn over the timestamp")
+          "a fourth item is dropped, not drawn over the cards")
 
 
 def test_planes() -> None:

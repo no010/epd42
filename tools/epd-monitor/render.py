@@ -93,7 +93,6 @@ class Layout:
     font_px: int
     text_h: int
     rule_row: int
-    stamp_row: int
     content_top: int
     content_bottom: int
     card_h: int
@@ -140,10 +139,11 @@ def select_fonts(font_path: str | None = None) -> tuple[str, str | None]:
     return text, (None if font_path else _first_existing(MONO_FONT_CANDIDATES))
 
 
-def _content_box(stamp_h: int) -> tuple[int, int, int, int]:
+def _content_box(stamp_h: int) -> tuple[int, int, int]:
+    """Title row up top (shared by the title and the update stamp), then the
+    card area down to a thin bottom margin - no reserved bottom row."""
     rule_row = stamp_h + 2
-    stamp_row = SCREEN_HEIGHT - stamp_h - 1
-    return rule_row, stamp_row, rule_row + 4, stamp_row - 4
+    return rule_row, rule_row + 4, SCREEN_HEIGHT - 4
 
 
 CURRENCY_SYMBOLS = {"CNY": "¥", "RMB": "¥", "元": "¥", "USD": "$", "US$": "$", "$": "$"}
@@ -168,6 +168,9 @@ def usage_line(item) -> str:
         parts.append(f"{item.quota_used:,} {item.unit} used")
     if item.balance:
         parts.append(_balance_text(item))
+    extra = getattr(item, "extra", "")
+    if extra:
+        parts.append(extra)
     return "   ".join(parts) or "no data"
 
 
@@ -196,7 +199,7 @@ def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,
     panel rather than sit at the top of it in larger text.
     """
     count = max(1, min(count, MAX_ITEMS))
-    rule_row, stamp_row, top, bottom = _content_box(_metrics(stamp_font))
+    rule_row, top, bottom = _content_box(_metrics(stamp_font))
     card_h = (bottom - top) // count
     pad = max(2, card_h // 10)
     mono_path = mono_path or text_font_path
@@ -229,7 +232,6 @@ def plan(count: int, text_font_path: str, mono_path: str | None, stamp_font,
         font_px=font_px,
         text_h=text_h,
         rule_row=rule_row,
-        stamp_row=stamp_row,
         content_top=top,
         content_bottom=bottom,
         card_h=card_h,
@@ -270,8 +272,11 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
                                 texts=[usage_line(item) for item in items],
                                 usable_px=usable)
 
-    draw.text(((SCREEN_WIDTH - draw.textlength(title, font=stamp_font)) // 2, 0),
-              title, font=stamp_font, fill=0)
+    draw.text((MARGIN_X, 0), title, font=stamp_font, fill=0)
+    stamp = updated if updated is not None else datetime.now().strftime("%m-%d %H:%M")
+    if stamp:
+        stamp_x = SCREEN_WIDTH - MARGIN_X - draw.textlength(stamp, font=stamp_font)
+        draw.text((stamp_x, 0), stamp, font=stamp_font, fill=0)
     draw.line((0, layout.rule_row, SCREEN_WIDTH, layout.rule_row), fill=0)
 
     for index, item in enumerate(items):
@@ -305,9 +310,6 @@ def compose(items: Sequence, title: str = "SUB MONITOR",
             if bar_text:
                 draw.text((bar_right + 6, bar_top), bar_text, font=stamp_font, fill=0)
 
-    stamp = updated if updated is not None else datetime.now().strftime("%m-%d %H:%M")
-    if stamp:
-        draw.text((MARGIN_X, layout.stamp_row), f"Updated: {stamp}", font=stamp_font, fill=0)
     return image
 
 

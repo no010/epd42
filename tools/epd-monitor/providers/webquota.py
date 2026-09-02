@@ -131,8 +131,7 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
 
     note_parts: list[str] = []
     costs = summary.get("total_costs") or []
-    if costs:
-        note_parts.append(f"cum {float(costs[0].get('amount', 0)):,.0f}CNY")
+    extra = f"cum {float(costs[0].get('amount', 0)):,.0f}CNY" if costs else ""
 
     cost_body = _last_with(responses.get(DEEPSEEK_COST_FRAGMENT) or [],
                            "data", "biz_data", "data")
@@ -167,13 +166,14 @@ def parse_deepseek(responses: dict[str, list[dict[str, Any]]],
 
     return [SubscriptionItem(plan_name="DeepSeek", quota_total=0, quota_used=0,
                              balance=balance, unit="CNY",
-                             note="·".join(note_parts))]
+                             note=" ".join(note_parts), extra=extra)]
 
 
 def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionItem]:
-    """The quota tab's own view: 5-hour and 7-day window remaining shares from
+    """The quota tab's own view: 5-hour and 7-day window usage shares from
     GetSubscriptionStats, the plan title and monthly credits from
-    GetSubscription.  The bar is the 5-hour remaining share (the window that
+    GetSubscription.  Every share on the card reads as usage (the convention
+    the Aliyun card set); the bar is the 5-hour usage (the window that
     actually blocks mid-day), with its reset time parked at the bar's right."""
     bodies = responses.get(KIMI_SUBSCRIPTION_FRAGMENT) or []
     stats_bodies = responses.get(KIMI_STATS_FRAGMENT) or []
@@ -203,10 +203,9 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
     if not stats or credits is None:
         raise ProviderError("[Kimi] quota page returned no window usage data")
 
-    r5_ratio = float(stats["ratelimitCode5h"].get("ratio", 0))
-    five_left = round((1 - r5_ratio) * 100)
-    note = [f"Mo {round((1 - float(credits['amountUsedRatio'])) * 100)}%",
-            f"Wk {round((1 - float(stats['ratelimitCode7d']['ratio'])) * 100)}%",
+    five_used = round(float(stats["ratelimitCode5h"].get("ratio", 0)) * 100)
+    note = [f"Mo {round(float(credits['amountUsedRatio']) * 100)}%",
+            f"Wk {round(float(stats['ratelimitCode7d']['ratio']) * 100)}%",
             f"7d rst {_md(stats['ratelimitCode7d']['resetTime'])}",
             f"exp {_md(credits['expireTime'])}"]
 
@@ -216,7 +215,7 @@ def parse_kimi(responses: dict[str, list[dict[str, Any]]]) -> list[SubscriptionI
         bar_text = f"rst {_local(reset5h):%H:%M}"
 
     return [SubscriptionItem(plan_name=f"Kimi {title}".strip(), quota_total=100,
-                             quota_used=five_left, balance=0, unit="%",
+                             quota_used=five_used, balance=0, unit="%",
                              note=" ".join(note), bar_text=bar_text)]
 
 
@@ -233,10 +232,10 @@ def parse_aliyun(responses: dict[str, list[dict[str, Any]]]) -> list[Subscriptio
     if not usage:
         raise ProviderError("[Aliyun] token-plan page returned no usage data")
 
-    # The bar reads as usage, not remaining: a 93% bar was mistaken for
-    # "93 used".  The metrics line states the remaining share explicitly.
+    # Every share reads as usage across all cards, so the bar and the metrics
+    # line agree; reset and remaining days carry the planning info.
     used = float(usage["per1WeekPercentage"]) * 100
-    note = [f"left {100 - used:.1f}%"]
+    note = []
     reset = usage.get("per1WeekResetTime")
     if reset:
         note.append(f"rst {datetime.fromtimestamp(reset / 1000):%m-%d %H:%M}")

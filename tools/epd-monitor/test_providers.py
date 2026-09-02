@@ -126,7 +126,8 @@ def test_webquota_parsers() -> None:
         "usage/by_api_key/amount": [ds_amount],
     }, now=noon)
     check(ds[0].balance == 5911, "DeepSeek balance parses to cents")
-    for part in ("cum 271CNY", "tdy ¥0.50", "tok 30.0M", "F67%/P33%"):
+    check(ds[0].extra == "cum 271CNY", "lifetime spend rides the metrics line")
+    for part in ("tdy ¥0.50", "tok 30.0M", "F67%/P33%"):
         check(part in ds[0].note, f"note carries {part!r}")
 
     kimi_stats = {"ratelimitCode5h": {"ratio": 0.0681, "enabled": True,
@@ -147,11 +148,11 @@ def test_webquota_parsers() -> None:
         "MembershipService/GetSubscriptionStats": [kimi_stats],
     })
     check(kimi[0].plan_name == "Kimi Allegretto", "the plan title lands in the name")
-    check(kimi[0].quota_used == 93,
-          "the bar is the 5-hour remaining share (93.2% left)")
+    check(kimi[0].quota_used == 7,
+          "the bar is the 5-hour usage share (6.8% used)")
     check(kimi[0].bar_text == "rst 18:22",
           "the 5h reset time sits at the bar's right (local time)")
-    for part in ("Mo 72%", "Wk 61%", "7d rst 09-05", "exp 09-25"):
+    for part in ("Mo 28%", "Wk 39%", "7d rst 09-05", "exp 09-25"):
         check(part in kimi[0].note, f"note carries {part!r}")
 
     fresh = {**kimi_stats,
@@ -161,8 +162,8 @@ def test_webquota_parsers() -> None:
         "MembershipService/GetSubscription": [kimi_stats],
         "MembershipService/GetSubscriptionStats": [fresh],
     })
-    check(kimi_fresh[0].quota_used == 100,
-          "a fresh 5h window (no ratio) reads as 100% remaining")
+    check(kimi_fresh[0].quota_used == 0,
+          "a fresh 5h window (no ratio) reads as 0% used")
     check(kimi_fresh[0].bar_text == "rst 23:22",
           "the fresh window still shows its reset time")
 
@@ -176,6 +177,7 @@ def test_webquota_parsers() -> None:
                 "code": "SUCCESS", "data": {"specCode": "pro", "remainingDays": 20}}}}}],
     })
     check(aliyun[0].quota_used == 1, "the bar is usage (0.99% used), not remaining")
+    check("left" not in aliyun[0].note, "no remaining share anywhere on the card")
     for part in ("rst 09-07 10:11", "20d"):
         check(part in aliyun[0].note, f"note carries {part!r}")
 
