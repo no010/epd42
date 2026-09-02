@@ -25,21 +25,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-arm-gcc-${{ runner.os }}
+
       - name: Install ARM GCC
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        run: sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        env:
+          DEBIAN_FRONTEND: noninteractive
 
       - name: Build firmware
         run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
 
-      - name: Rename artifacts
+      - name: Collect artifact
         run: |
           mkdir -p dist
-          for f in build/${{ matrix.target }}/*.hex; do
-            base=$(basename "$f" .hex)
-            cp "$f" "dist/${{ matrix.artifact }}.hex"
-          done
+          cp build/${{ matrix.target }}/${{ matrix.artifact }}.hex dist/
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
