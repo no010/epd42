@@ -42,10 +42,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Cache APT packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-arm-gcc-${{ runner.os }}
+
       - name: Install ARM GCC
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        run: sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+        env:
+          DEBIAN_FRONTEND: noninteractive
 
       - name: Build firmware
         run: python3 tools/build_firmware.py --target "${{ matrix.target }}"
