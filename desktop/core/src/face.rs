@@ -212,8 +212,10 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
     let top_h = ((ym - HG_INSET) - (y0 + 1)) as f64;
     let bot_h = ((y1 - 1) - (ym + HG_INSET)) as f64;
 
+    // 面积比例映射：三角形腔内面积 ∝ 高度²，所以用 sqrt 使"沙子的量感"
+    // （可见面积）等于剩余比例——剩 8/25 分钟时上腔看起来约 1/3 满。
     // 上半：沙贴颈部，沙面下沉（顶部先空）
-    let sand_h = (frac * top_h) as i32;
+    let sand_h = (frac.sqrt() * top_h) as i32;
     if sand_h >= 1 {
         let surface_y = ym - HG_INSET - sand_h;
         let hw = half_w * (sand_h as f64 / top_h);
@@ -228,8 +230,8 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
         );
     }
 
-    // 下半：沙堆从底边堆积，顶面宽度 = half_w * (1 - 沙高/瓶高)
-    let pile_h = ((1.0 - frac) * bot_h) as i32;
+    // 下半：沙堆从底边堆积，面积 ∝ 已用比例（与上半对称，总量守恒）
+    let pile_h = ((1.0 - frac).sqrt() * bot_h) as i32;
     if pile_h >= 1 {
         let surface_y = y1 - 1 - pile_h;
         let hw = half_w * (1.0 - pile_h as f64 / bot_h);
@@ -488,6 +490,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sand_area_tracks_remaining() {
+        // 面积比例映射：剩 8/25 分钟时，上腔墨量 ≈ 32%（±容差，含轮廓描边）
+        let lay = layout();
+        let y0 = lay.hg_y;
+        let ym = lay.hg_y + lay.hg_h / 2;
+        let y1 = lay.hg_y + lay.hg_h;
+        let mut st = state(1500, false);
+        st.remaining = 480;
+        let buf = render(&st);
+        let mut top = 0usize;
+        let mut bottom = 0usize;
+        for y in (y0 + 1)..ym {
+            for x in (lay.cx - 70)..=(lay.cx + 70) {
+                if ink_at(&buf, x, y) {
+                    top += 1;
+                }
+            }
+        }
+        for y in (ym + 1)..y1 {
+            for x in (lay.cx - 70)..=(lay.cx + 70) {
+                if ink_at(&buf, x, y) {
+                    bottom += 1;
+                }
+            }
+        }
+        let ratio = top as f64 / (top + bottom) as f64;
+        assert!(
+            (0.24..=0.40).contains(&ratio),
+            "上腔墨量占比 {ratio:.3}，期望 ≈0.32（面积比例映射）"
+        );
     }
 
     #[test]

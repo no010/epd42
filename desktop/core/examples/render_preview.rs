@@ -23,14 +23,15 @@ fn main() {
         phase: 0,
         phase_seconds: 1500,
         remaining: 1500,
-        running: false,
+        running: true,
         pomodoro_count: 2,
         cycle_total: 7,
         rounds: 4,
         stamp: "09-04 16:30".to_string(),
     };
     write_pgm("face_full.pgm", &full);
-    full.remaining = 750;
-    full.running = true;
+    full.remaining = 480; // 8/25 分钟
+    write_pgm("face_eight.pgm", &full);
+    full.remaining = 750; // 半程
     write_pgm("face_half.pgm", &full);
 }
