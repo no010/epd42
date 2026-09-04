@@ -6,3 +6,6 @@ description = "EPD42 上位机协议核心：位打包、PackBits、流式分帧
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

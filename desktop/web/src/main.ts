@@ -47,6 +47,7 @@ interface Settings {
   shortMin: number;
   longMin: number;
   rounds: number;
+  scanTimeout: number; // 秒
   pushEnabled: boolean;
   pushInterval: number; // 分钟
   driver: string;
@@ -78,6 +79,7 @@ const pushEnabledEl = $("push-enabled") as HTMLInputElement;
 const pushIntervalEl = $("push-interval") as HTMLInputElement;
 const driverEl = $("driver") as HTMLSelectElement;
 const autostartEl = $("autostart") as HTMLInputElement;
+const scanTimeoutEl = $("scan-timeout") as HTMLInputElement;
 const statsEl = $("stats");
 
 const ADDR_KEY = "epd42-pomodoro-address";
@@ -90,6 +92,7 @@ function defaultSettings(): Settings {
     shortMin: DEFAULT_DURATIONS.shortMin,
     longMin: DEFAULT_DURATIONS.longMin,
     rounds: DEFAULT_DURATIONS.rounds,
+    scanTimeout: 10,
     pushEnabled: false,
     pushInterval: 3,
     driver: "2",
@@ -116,6 +119,7 @@ function applySettings(s: Settings): void {
   shortEl.value = String(s.shortMin);
   longEl.value = String(s.longMin);
   roundsEl.value = String(s.rounds);
+  scanTimeoutEl.value = String(s.scanTimeout);
   pushEnabledEl.checked = s.pushEnabled;
   pushIntervalEl.value = String(s.pushInterval);
   driverEl.value = s.driver;
@@ -127,6 +131,7 @@ function syncSettings(): void {
   settings.shortMin = Math.max(1, Number(shortEl.value) || DEFAULT_DURATIONS.shortMin);
   settings.longMin = Math.max(1, Number(longEl.value) || DEFAULT_DURATIONS.longMin);
   settings.rounds = Math.max(1, Math.round(Number(roundsEl.value) || DEFAULT_DURATIONS.rounds));
+  settings.scanTimeout = Math.min(60, Math.max(3, Number(scanTimeoutEl.value) || 10));
   settings.pushEnabled = pushEnabledEl.checked;
   settings.pushInterval = Math.max(0, Number(pushIntervalEl.value) || 3);
   settings.driver = driverEl.value;
@@ -223,7 +228,10 @@ function syncFace(): void {
   lastFaceSignature = sig;
   invoke<number[]>("render_face", { state: face })
     .then((luma) => blitFace(luma))
-    .catch(() => {});
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log(`画面渲染失败：${message}`);
+    });
 }
 
 function blitFace(luma: number[]): void {
@@ -317,7 +325,7 @@ async function scanDevices(): Promise<void> {
   scanBtn.disabled = true;
   deviceEl.innerHTML = '<option value="__none__">（自动查找 NRF_EPD）</option>';
   try {
-    const devices = await invoke<DeviceInfo[]>("scan_devices", { timeoutSecs: 4 });
+    const devices = await invoke<DeviceInfo[]>("scan_devices", { timeoutSecs: settings.scanTimeout });
     const saved = localStorage.getItem(ADDR_KEY);
     for (const d of devices) {
       const name = d.name || "(未命名)";

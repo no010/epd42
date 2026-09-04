@@ -9,6 +9,8 @@ use super::font_data::{self, Glyph};
 use super::{SCREEN_HEIGHT, SCREEN_WIDTH};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+// 前端按 Tauri 习惯传 camelCase 键；嵌套结构体字段不做自动转换，这里显式声明。
+#[serde(rename_all = "camelCase")]
 pub struct FaceState {
     /// 0 = 专注, 1 = 短休息, 2 = 长休息
     pub phase: u8,
@@ -401,6 +403,17 @@ pub fn render(state: &FaceState) -> Luma {
 mod tests {
     use super::*;
 
+    #[test]
+    fn face_state_deserializes_from_camel_case() {
+        let json = r#"{"phase":0,"phaseSeconds":1500,"remaining":750,"running":true,"pomodoroCount":2,"cycleTotal":7,"rounds":4,"stamp":"09-04 16:00"}"#;
+        let st: FaceState =
+            serde_json::from_str(json).expect("camelCase JSON 应能反序列化");
+        assert_eq!(st.phase_seconds, 1500);
+        assert_eq!(st.pomodoro_count, 2);
+        assert_eq!(st.cycle_total, 7);
+        assert!(st.running);
+        assert_eq!(st.stamp, "09-04 16:00");
+    }
     fn state(remaining_secs: u32, running: bool) -> FaceState {
         FaceState {
             phase: 0,

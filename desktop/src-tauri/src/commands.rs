@@ -13,8 +13,7 @@ pub struct AppState {
 
 #[tauri::command]
 pub async fn scan_devices(timeout_secs: u64) -> Result<Vec<ble::DeviceInfo>, String> {
-    let _ = timeout_secs;
-    ble::scan_devices(4).await
+    ble::scan_devices(timeout_secs.clamp(3, 60)).await
 }
 
 /// 由 Rust 渲染 400x300 沙漏画面（预览与推送共用同一实现）。
