@@ -3,10 +3,27 @@ mod commands;
 mod tray;
 
 use commands::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcuts(["ctrl+alt+p", "ctrl+alt+s"])
+        .expect("注册全局快捷键失败")
+        .with_handler(|app, shortcut, event| {
+            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                let key = shortcut.to_string().to_lowercase();
+                let _ = if key.ends_with("+s") {
+                    app.emit("menu-push", ())
+                } else if key.ends_with("+p") {
+                    app.emit("menu-toggle", ())
+                } else {
+                    Ok(())
+                };
+            }
+        })
+        .build();
+
     tauri::Builder::default()
         // 双开时把已有窗口调出来，避免两个计时器同时抢推一块屏
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -20,9 +37,11 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![]),
         ))
+        .plugin(shortcut_plugin)
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::scan_devices,
+            commands::render_face,
             commands::push_frame,
             commands::notify,
             commands::set_autostart,

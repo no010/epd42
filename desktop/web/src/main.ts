@@ -1,6 +1,5 @@
 // 主入口：计时循环、UI 绑定、设置持久化、托盘联动、BLE 推送、系统通知。
 
-import { drawFace, lumaBytes } from "./face.js";
 import {
   DEFAULT_DURATIONS,
   Durations,
@@ -8,10 +7,12 @@ import {
   PomodoroState,
   advance,
   clearSavedState,
+  lastNDays,
   loadState,
   mmss,
   newState,
   phaseSecondsFor,
+  recordPomodoro,
   saveState,
   skip,
 } from "./timer.js";
@@ -77,6 +78,7 @@ const pushEnabledEl = $("push-enabled") as HTMLInputElement;
 const pushIntervalEl = $("push-interval") as HTMLInputElement;
 const driverEl = $("driver") as HTMLSelectElement;
 const autostartEl = $("autostart") as HTMLInputElement;
+const statsEl = $("stats");
 
 const ADDR_KEY = "epd42-pomodoro-address";
 const SETTINGS_KEY = "epd42-pomodoro-settings";
@@ -157,13 +159,88 @@ function log(message: string): void {
   logEl.textContent = `${p(time.getHours())}:${p(time.getMinutes())}:${p(time.getSeconds())}  ${message}\n` + logEl.textContent;
 }
 
+// ── 周统计（纯 CSS 条形图）─────────────────────────────────────────────
+function renderStats(): void {
+  const days = lastNDays(7);
+  const max = Math.max(1, ...days.map((d) => d.count));
+  const total = days.reduce((sum, d) => sum + d.count, 0);
+  const bars = days
+    .map((d) => {
+      const height = d.count === 0 ? 3 : Math.max(6, Math.round((d.count / max) * 68));
+      const cls = d.isToday ? "bar-col today" : "bar-col";
+      return (
+        `<div class="${cls}" title="${d.date}：${d.count} 个">` +
+        `<div class="bar" style="height:${height}px"></div>` +
+        `<div class="day">${d.label}</div>` +
+        `<div class="count">${d.count}</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+  statsEl.innerHTML = `<div class="stats-title">近 7 天共 ${total} 个番茄</div><div class="bars">${bars}</div>`;
+}
+
 // ── 画面 ────────────────────────────────────────────────────────────────
 function remainingToText(): string {
   return `${Math.max(0, Math.ceil(state.remaining))}s`;
 }
 
+// ── 画面：由 Rust 渲染（预览与推送共用同一实现，消灭复刻漂移）─────────────
+interface FaceState {
+  phase: number;
+  phaseSeconds: number;
+  remaining: number;
+  running: boolean;
+  pomodoroCount: number;
+  cycleTotal: number;
+  rounds: number;
+  stamp: string;
+}
+
+function faceStateOf(): FaceState {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const phases = ["work", "short_break", "long_break"];
+  return {
+    phase: phases.indexOf(state.phase),
+    phaseSeconds: state.phaseSeconds,
+    remaining: Math.max(0, Math.ceil(state.remaining)),
+    running: state.running,
+    pomodoroCount: state.pomodoroCount,
+    cycleTotal: state.cycleTotal,
+    rounds: state.rounds,
+    stamp: `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`,
+  };
+}
+
+let lastFaceSignature = "";
+
+function syncFace(): void {
+  const face = faceStateOf();
+  // 分钟级画面：内容没变就不重新渲染，避免逐帧 IPC
+  const sig = `${face.phase}|${Math.floor(face.remaining / 60)}|${face.running}|${face.pomodoroCount}|${face.cycleTotal}|${face.rounds}`;
+  if (sig === lastFaceSignature) return;
+  lastFaceSignature = sig;
+  invoke<number[]>("render_face", { state: face })
+    .then((luma) => blitFace(luma))
+    .catch(() => {});
+}
+
+function blitFace(luma: number[]): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const rgba = new Uint8ClampedArray(400 * 300 * 4);
+  for (let i = 0; i < 400 * 300; i += 1) {
+    const v = luma[i] as number;
+    rgba[i * 4] = v;
+    rgba[i * 4 + 1] = v;
+    rgba[i * 4 + 2] = v;
+    rgba[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(new ImageData(rgba, 400, 300), 0, 0);
+}
+
 function redraw(): void {
-  drawFace(canvas, state);
   const [zh] = PHASE_NAMES[state.phase];
   statusEl.textContent =
     `${state.running ? "▶" : "⏸"} 剩 ${remainingToText()}  本轮 ${state.pomodoroCount}/${state.rounds}`;
@@ -177,6 +254,7 @@ function listenTray(): void {
   const { event } = window.__TAURI__;
   void event.listen<null>("menu-toggle", () => startBtn.click());
   void event.listen<null>("menu-push", () => void doPush());
+  // 全局快捷键经 Rust 分流后发 menu-push / menu-toggle（见 src-tauri/src/lib.rs）
 }
 
 function updateTrayTooltip(): void {
@@ -196,25 +274,39 @@ function currentAddress(): string | null {
   return localStorage.getItem(ADDR_KEY);
 }
 
+const PUSH_MAX_ATTEMPTS = 3;
+const PUSH_RETRY_DELAY_MS = 1500;
+
 async function doPush(): Promise<boolean> {
   pushBtn.disabled = true;
   try {
-    const report = await invoke<PushReport>("push_frame", {
-      pixels: Array.from(lumaBytes(canvas)),
-      driver: Number(settings.driver),
-      address: currentAddress(),
-    });
-    pushStatusEl.textContent =
-      `✓ ${report.planes} 平面 ${report.payloadBytes}B → 编码 ${report.encodedBytes}B / ${report.packets} 包`;
-    log(`推送成功：${report.planes} 平面，${report.encodedBytes} 字节 / ${report.packets} 包`);
-    if (deviceEl.value && deviceEl.value !== "__none__") {
-      localStorage.setItem(ADDR_KEY, deviceEl.value);
+    for (let attempt = 1; attempt <= PUSH_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const report = await invoke<PushReport>("push_frame", {
+          state: faceStateOf(),
+          driver: Number(settings.driver),
+          address: currentAddress(),
+        });
+        pushStatusEl.textContent =
+          `✓ ${report.planes} 平面 ${report.payloadBytes}B → 编码 ${report.encodedBytes}B / ${report.packets} 包`;
+        log(`推送成功：${report.planes} 平面，${report.encodedBytes} 字节 / ${report.packets} 包`);
+        if (deviceEl.value && deviceEl.value !== "__none__") {
+          localStorage.setItem(ADDR_KEY, deviceEl.value);
+        }
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt < PUSH_MAX_ATTEMPTS) {
+          pushStatusEl.textContent = `↻ 第 ${attempt} 次失败，${PUSH_RETRY_DELAY_MS / 1000}s 后重试：${message}`;
+          log(`推送失败（第 ${attempt} 次），稍后重试：${message}`);
+          await new Promise((resolve) => setTimeout(resolve, PUSH_RETRY_DELAY_MS));
+        } else {
+          pushStatusEl.textContent = `✗ 多次失败，设备可能离线：${message}`;
+          log(`推送失败（重试 ${PUSH_MAX_ATTEMPTS - 1} 次后放弃）：${message}`);
+          return false;
+        }
+      }
     }
-    return true;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    pushStatusEl.textContent = `✗ ${message}`;
-    log(`推送失败：${message}`);
     return false;
   } finally {
     pushBtn.disabled = false;
@@ -279,6 +371,10 @@ function tick(): void {
     if (state.remaining <= 0) {
       const previous = state.phase;
       advance(state, durationsOf(settings));
+      if (previous === "work") {
+        recordPomodoro();
+        renderStats();
+      }
       state.running = true;
       deadline = Date.now() / 1000 + state.remaining;
       log(`阶段切换：${previous} → ${state.phase}`);
@@ -301,6 +397,7 @@ function tick(): void {
   }
   updateTrayTooltip();
   redraw();
+  syncFace();
 }
 
 // ── 控件 ────────────────────────────────────────────────────────────────
@@ -383,6 +480,7 @@ function start(): void {
   syncSettings();
   if (state.running) startBtn.textContent = "暂停";
   redraw();
+  renderStats();
   listenTray();
   void scanDevices();
   // 回读开机自启的真实状态（避免覆盖系统设置）

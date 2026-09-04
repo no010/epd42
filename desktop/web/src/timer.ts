@@ -44,9 +44,12 @@ export function mmss(seconds: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function today(): string {
-  const d = new Date();
+function toKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function today(): string {
+  return toKey(new Date());
 }
 
 export function newState(dur: Durations): PomodoroState {
@@ -141,4 +144,59 @@ export function skip(state: PomodoroState, dur: Durations): void {
   }
   state.phaseSeconds = phaseSecondsFor(state.phase, dur);
   state.remaining = state.phaseSeconds;
+}
+// ── 每日番茄统计（localStorage，只留最近 14 天）───────────────────────────
+export type DailyStats = Record<string, number>;
+
+const STATS_KEY = "epd42-pomodoro-stats";
+
+export function loadStats(): DailyStats {
+  try {
+    const raw = localStorage.getItem(STATS_KEY);
+    const stats: DailyStats = raw ? (JSON.parse(raw) as DailyStats) : {};
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 13);
+    const kept: DailyStats = {};
+    for (const [date, count] of Object.entries(stats)) {
+      if (date >= toKey(cutoff) && count > 0) kept[date] = count;
+    }
+    return kept;
+  } catch {
+    return {};
+  }
+}
+
+/** 完成一个专注时调用，当天计数 +1。 */
+export function recordPomodoro(): void {
+  const key = today();
+  const stats = loadStats();
+  stats[key] = (stats[key] ?? 0) + 1;
+  localStorage.setItem(STATS_KEY, JSON.stringify(stats));
+}
+
+export interface DayStat {
+  date: string;
+  label: string;
+  count: number;
+  isToday: boolean;
+}
+
+/** 最近 n 天（含今天），按时间升序。 */
+export function lastNDays(n: number): DayStat[] {
+  const stats = loadStats();
+  const todayKey = today();
+  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+  const out: DayStat[] = [];
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = toKey(d);
+    out.push({
+      date: key,
+      label: key === todayKey ? "今" : weekdays[d.getDay()],
+      count: stats[key] ?? 0,
+      isToday: key === todayKey,
+    });
+  }
+  return out;
 }

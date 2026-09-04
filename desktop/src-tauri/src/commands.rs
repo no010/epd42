@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::ble;
+use epd42_core::face::{self, FaceState};
 
 #[derive(Default)]
 pub struct AppState {
@@ -16,24 +17,31 @@ pub async fn scan_devices(timeout_secs: u64) -> Result<Vec<ble::DeviceInfo>, Str
     ble::scan_devices(4).await
 }
 
+/// 由 Rust 渲染 400x300 沙漏画面（预览与推送共用同一实现）。
+#[tauri::command]
+pub fn render_face(state: FaceState) -> Result<Vec<u8>, String> {
+    Ok(face::render(&state))
+}
+
 #[tauri::command]
 pub async fn push_frame(
-    pixels: Vec<u8>,
+    state: FaceState,
     driver: u8,
     address: Option<String>,
-    state: State<'_, AppState>,
+    app_state: State<'_, AppState>,
 ) -> Result<ble::PushReport, String> {
+    let luma = face::render(&state);
     let chosen = match address {
         Some(addr) if !addr.trim().is_empty() => Some(addr.trim().to_string()),
-        _ => state
+        _ => app_state
             .last_address
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or(None),
     };
-    let report = ble::push_frame(chosen.as_deref(), &pixels, driver).await?;
+    let report = ble::push_frame(chosen.as_deref(), &luma, driver).await?;
     if let Some(addr) = chosen {
-        if let Ok(mut guard) = state.last_address.lock() {
+        if let Ok(mut guard) = app_state.last_address.lock() {
             *guard = Some(addr);
         }
     }

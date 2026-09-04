@@ -3,3 +3,6 @@ name = "epd42-core"
 version = "0.1.0"
 edition = "2021"
 description = "EPD42 上位机协议核心：位打包、PackBits、流式分帧（与 tools/epd-monitor 同约定）"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

@@ -10,6 +10,9 @@
 //!
 //! 这一层不依赖任何第三方 crate，便于离线单测。
 
+pub mod face;
+mod font_data;
+
 pub const SCREEN_WIDTH: usize = 400;
 pub const SCREEN_HEIGHT: usize = 300;
 pub const LINE_BYTES: usize = SCREEN_WIDTH / 8;
