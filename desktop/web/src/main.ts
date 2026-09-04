@@ -141,7 +141,7 @@ async function scanDevices(): Promise<void> {
   scanBtn.disabled = true;
   deviceEl.innerHTML = '<option value="__none__">（自动查找 NRF_EPD）</option>';
   try {
-    const devices = await invoke<DeviceInfo[]>("scan_devices", { timeout_secs: 4 });
+    const devices = await invoke<DeviceInfo[]>("scan_devices", { timeoutSecs: 4 });
     const saved = localStorage.getItem(ADDR_KEY);
     for (const d of devices) {
       const name = d.name || "(未命名)";
