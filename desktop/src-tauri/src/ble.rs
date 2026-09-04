@@ -30,6 +30,7 @@ pub struct DeviceInfo {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PushReport {
     pub planes: usize,
     pub payload_bytes: usize,
@@ -271,4 +272,26 @@ pub async fn push_frame(
         stream_planes(&peripheral, &characteristic, &mut notifications, &planes).await;
     let _ = peripheral.disconnect().await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 前端按驼峰读取推送结果：一旦回退成蛇形，状态行就会显示 "undefined 字节"
+    #[test]
+    fn push_report_serializes_camel_case() {
+        let report = PushReport {
+            planes: 1,
+            payload_bytes: 15000,
+            encoded_bytes: 1650,
+            packets: 87,
+            checksum: 12345,
+        };
+        let json = serde_json::to_string(&report).expect("序列化失败");
+        assert!(json.contains("\"payloadBytes\""), "应为驼峰 payloadBytes：{json}");
+        assert!(json.contains("\"encodedBytes\""), "应为驼峰 encodedBytes：{json}");
+        assert!(!json.contains("payload_bytes"), "不应再有蛇形 payload_bytes：{json}");
+        assert!(!json.contains("encoded_bytes"), "不应再有蛇形 encoded_bytes：{json}");
+    }
 }
