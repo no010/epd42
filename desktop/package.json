@@ -1,0 +1,11 @@
+{
+  "name": "epd42-pomodoro-desktop",
+  "private": true,
+  "scripts": {
+    "build": "tauri build",
+    "dev": "tauri dev"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

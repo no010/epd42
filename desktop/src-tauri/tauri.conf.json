@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.epd42.pomodoro",
   "build": {
-    "beforeBuildCommand": "node ../web/scripts/build.mjs",
+    "beforeDevCommand": "node web/scripts/build.mjs",
+    "beforeBuildCommand": "node web/scripts/build.mjs",
     "frontendDist": "../web/dist"
   },
   "app": {

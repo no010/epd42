@@ -19,26 +19,28 @@ src-tauri/ (Rust)
 
 ## 构建与运行
 
-前置：Rust（MSVC target）、Node.js（仅前端编译）。
+前置：Rust（MSVC target）、Node.js（前端编译 + tauri CLI）。**所有构建命令都在
+`desktop/` 目录执行**（`beforeBuildCommand` 的路径按该目录解析）。
 
 ```bash
 cd desktop
+npm install                # 装 @tauri-apps/cli（预编译二进制，不用从源码编）
 
 # 后端检查/测试（离线）
 cargo check -p epd42-pomodoro
 cargo test  -p epd42-core
 
-# 前端编译（生成 web/dist）
-cd web && npm install && npm run build && cd ..
-
-# 完成
-# 方式一：tauri CLI（推荐）
-cargo install tauri-cli --locked
-cargo tauri dev          # 开发调试
-cargo tauri build        # 产出安装包（Windows 为 NSIS/exe + MSI）
-# 方式二：只编译 exe
-cd src-tauri && cargo build --release
+# 出安装包 / exe（自动先编译前端 web/dist）
+npm run build              # 等价 tauri build（Windows 默认产出 NSIS 安装包）
+# 或只出裸 exe：
+npx tauri build --no-bundle
 ```
+
+产物位置：
+
+* `target/release/epd42-pomodoro.exe` —— 免安装绿色版（~10MB）
+* `target/release/bundle/nsis/epd42-pomodoro_0.1.0_x64-setup.exe` —— NSIS 安装包
+* 开发调试：`npm run dev`（等价 `tauri dev`）
 
 说明：
 
