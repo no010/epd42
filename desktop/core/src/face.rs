@@ -260,6 +260,8 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
     rect(buf, cx - frame_half, y1, cx + frame_half, y1 + HG_BAR_H);
 }
 
+// 本轮番茄进度：只用圆点表达（实心=已完成、带中心空心=进行中、空心=未开始），
+// 居中排列、不带文字——避免位图字体缺字导致"第2/4个"渲染成"24"。
 fn draw_dots(buf: &mut Luma, state: &FaceState, y: i32) {
     let rounds = state.rounds.max(1);
     let filled = state.pomodoro_count.min(rounds);
@@ -268,15 +270,9 @@ fn draw_dots(buf: &mut Luma, state: &FaceState, y: i32) {
     } else {
         u32::MAX
     };
-    let text = if state.phase == 0 {
-        format!("第 {}/{} 个", state.pomodoro_count, rounds)
-    } else {
-        format!("已完成 {}/{}", state.pomodoro_count, rounds)
-    };
     let gap = 12;
     let dot_w = rounds as i32 * 2 * DOT_RADIUS + (rounds as i32 - 1) * gap;
-    let group_w = dot_w + 18 + text_width(&text, FontKind::Msy16);
-    let x = ((SCREEN_WIDTH as i32 - group_w) / 2).max(MARGIN_X);
+    let x = ((SCREEN_WIDTH as i32 - dot_w) / 2).max(MARGIN_X);
     let cy = y + DOT_RADIUS;
     for i in 0..rounds as i32 {
         let cx2 = x + DOT_RADIUS + i * (2 * DOT_RADIUS + gap);
@@ -289,7 +285,6 @@ fn draw_dots(buf: &mut Luma, state: &FaceState, y: i32) {
             }
         }
     }
-    draw_text(buf, x + dot_w + 18, y, &text, FontKind::Msy16);
 }
 
 fn minute_text(state: &FaceState) -> String {
