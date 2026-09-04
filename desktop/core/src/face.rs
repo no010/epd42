@@ -207,8 +207,10 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
     let sx0 = x0 + HG_INSET;
     let sx1 = x1 - HG_INSET;
     let half_w = (sx1 - sx0) as f64 / 2.0;
-    let top_h = ((ym - HG_INSET) - (y0 + HG_INSET)) as f64;
-    let bot_h = ((y1 - HG_INSET) - (ym + HG_INSET)) as f64;
+    // 沙体上沿贴到下横梁、下沿贴到上横梁（差 1px 接拢轮廓描边），
+    // 避免沙堆底边与横梁之间漏出 2px 白缝。
+    let top_h = ((ym - HG_INSET) - (y0 + 1)) as f64;
+    let bot_h = ((y1 - 1) - (ym + HG_INSET)) as f64;
 
     // 上半：沙贴颈部，沙面下沉（顶部先空）
     let sand_h = (frac * top_h) as i32;
@@ -229,17 +231,17 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
     // 下半：沙堆从底边堆积，顶面宽度 = half_w * (1 - 沙高/瓶高)
     let pile_h = ((1.0 - frac) * bot_h) as i32;
     if pile_h >= 1 {
-        let surface_y = y1 - HG_INSET - pile_h;
+        let surface_y = y1 - 1 - pile_h;
         let hw = half_w * (1.0 - pile_h as f64 / bot_h);
         let hl = (cx as f64 - hw).round() as i32;
         let hr = (cx as f64 + hw).round() as i32;
-        fill_triangle(buf, hl, surface_y, hr, surface_y, sx1, y1 - HG_INSET);
-        fill_triangle(buf, hl, surface_y, sx0, y1 - HG_INSET, sx1, y1 - HG_INSET);
+        fill_triangle(buf, hl, surface_y, hr, surface_y, sx1, y1 - 1);
+        fill_triangle(buf, hl, surface_y, sx0, y1 - 1, sx1, y1 - 1);
     }
 
     // 沙流
     if running && frac > 0.0 && frac < 1.0 {
-        let pile_top = y1 - HG_INSET - pile_h;
+        let pile_top = y1 - 1 - pile_h;
         if pile_top > ym {
             rect(buf, cx - 1, ym, cx + 1, pile_top);
         }
