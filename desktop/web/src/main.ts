@@ -302,7 +302,7 @@ async function doPush(): Promise<boolean> {
           state: faceStateOf(),
           driver: Number(settings.driver),
           address: currentAddress(),
-          scanTimeout: settings.scanTimeout,
+          scanTimeoutSecs: settings.scanTimeout,
         });
         pushStatusEl.textContent =
           `✓ ${report.planes} 平面 ${report.payloadBytes}B → 编码 ${report.encodedBytes}B / ${report.packets} 包`;
