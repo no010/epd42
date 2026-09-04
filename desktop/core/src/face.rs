@@ -230,8 +230,9 @@ fn draw_hourglass(buf: &mut Luma, cx: i32, y_top: i32, height: i32, remaining: f
         );
     }
 
-    // 下半：沙堆从底边堆积，面积 ∝ 已用比例（与上半对称，总量守恒）
-    let pile_h = ((1.0 - frac).sqrt() * bot_h) as i32;
+    // 下半：与上半严格对称——底部沙高 = 顶部空白高 = (1−√f)×高。
+    // 守恒校验：下腔沙面积 = 1−(√f)² = 1−f，即下半沙量不变，只改高度分布。
+    let pile_h = ((1.0 - frac.sqrt()) * bot_h) as i32;
     if pile_h >= 1 {
         let surface_y = y1 - 1 - pile_h;
         let hw = half_w * (1.0 - pile_h as f64 / bot_h);
@@ -523,6 +524,39 @@ mod tests {
             (0.24..=0.40).contains(&ratio),
             "上腔墨量占比 {ratio:.3}，期望 ≈0.32（面积比例映射）"
         );
+    }
+
+    #[test]
+    fn top_empty_mirrors_bottom_pile() {
+        // 对称性：顶部空白高度应 ≈ 底部沙堆高度（沿中心列测量）
+        let lay = layout();
+        let y0 = lay.hg_y;
+        let ym = lay.hg_y + lay.hg_h / 2;
+        let y1 = lay.hg_y + lay.hg_h;
+        let cx = lay.cx;
+        for frac_sec in [1500u32, 1125, 750, 375] {
+            let mut st = state(1500, false);
+            st.remaining = frac_sec;
+            let buf = render(&st);
+            let mut top_empty = 0;
+            for y in (y0 + 2)..ym {
+                if ink_at(&buf, cx, y) {
+                    break;
+                }
+                top_empty += 1;
+            }
+            let mut bottom_sand = 0;
+            for y in (ym + 2..y1).rev() {
+                if !ink_at(&buf, cx, y) {
+                    break;
+                }
+                bottom_sand += 1;
+            }
+            assert!(
+                (top_empty as i32 - bottom_sand as i32).abs() <= 3,
+                "对称性：剩余 {frac_sec}s 时顶部空 {top_empty} 行 ≠ 底部沙 {bottom_sand} 行"
+            );
+        }
     }
 
     #[test]
