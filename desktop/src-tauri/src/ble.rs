@@ -20,7 +20,6 @@ use uuid::Uuid;
 use epd42_core as core;
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
-const RESCAN_MS: u64 = 4000;
 
 #[derive(Serialize, Clone)]
 pub struct DeviceInfo {
@@ -47,12 +46,13 @@ async fn first_adapter(manager: &Manager) -> Result<Adapter, String> {
         .ok_or_else(|| "没有可用的蓝牙适配器".to_string())
 }
 
-async fn rescan(adapter: &Adapter) -> Result<(), String> {
+/// 扫描一段后停止；`timeout_ms` 是扫描窗口——越久越容易抓到慢速广播的设备。
+async fn rescan(adapter: &Adapter, timeout_ms: u64) -> Result<(), String> {
     adapter
         .start_scan(ScanFilter::default())
         .await
         .map_err(|e| e.to_string())?;
-    tokio::time::sleep(Duration::from_millis(RESCAN_MS)).await;
+    tokio::time::sleep(Duration::from_millis(timeout_ms.max(1000))).await;
     let _ = adapter.stop_scan().await;
     Ok(())
 }
@@ -61,8 +61,7 @@ async fn rescan(adapter: &Adapter) -> Result<(), String> {
 pub async fn scan_devices(timeout_secs: u64) -> Result<Vec<DeviceInfo>, String> {
     let manager = Manager::new().await.map_err(|e| e.to_string())?;
     let adapter = first_adapter(&manager).await?;
-    rescan(&adapter).await?;
-    tokio::time::sleep(Duration::from_secs(timeout_secs.max(1))).await;
+    rescan(&adapter, timeout_secs.max(1) * 1000).await?;
 
     let mut devices = Vec::new();
     for peripheral in adapter.peripherals().await.map_err(|e| e.to_string())? {
@@ -192,6 +191,7 @@ pub async fn push_frame(
     address: Option<&str>,
     luma: &[u8],
     driver: u8,
+    scan_timeout_secs: u64,
 ) -> Result<PushReport, String> {
     if luma.len() != core::SCREEN_WIDTH * core::SCREEN_HEIGHT {
         return Err(format!(
@@ -217,8 +217,8 @@ pub async fn push_frame(
             match found {
                 Some(p) => p,
                 None => {
-                    // 缓存里没有：重新扫一小段再找
-                    rescan(&adapter).await?;
+                    // 缓存里没有：用可配置的扫描窗口再找
+                    rescan(&adapter, scan_timeout_secs.max(1) * 1000).await?;
                     adapter
                         .peripherals()
                         .await
@@ -230,7 +230,7 @@ pub async fn push_frame(
             }
         }
         None => {
-            rescan(&adapter).await?;
+            rescan(&adapter, scan_timeout_secs.max(1) * 1000).await?;
             let mut candidates: Vec<(Peripheral, String)> = Vec::new();
             for peripheral in adapter.peripherals().await.map_err(|e| e.to_string())? {
                 let name = peripheral

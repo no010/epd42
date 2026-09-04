@@ -27,6 +27,7 @@ pub async fn push_frame(
     state: FaceState,
     driver: u8,
     address: Option<String>,
+    scan_timeout_secs: u64,
     app_state: State<'_, AppState>,
 ) -> Result<ble::PushReport, String> {
     let luma = face::render(&state);
@@ -38,7 +39,7 @@ pub async fn push_frame(
             .map(|guard| guard.clone())
             .unwrap_or(None),
     };
-    let report = ble::push_frame(chosen.as_deref(), &luma, driver).await?;
+    let report = ble::push_frame(chosen.as_deref(), &luma, driver, scan_timeout_secs).await?;
     if let Some(addr) = chosen {
         if let Ok(mut guard) = app_state.last_address.lock() {
             *guard = Some(addr);

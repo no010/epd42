@@ -288,7 +288,7 @@ function pushIntervalSecs(): number {
   return Math.max(0, settings.pushInterval * 60 || 180);
 }
 
-const PUSH_MAX_ATTEMPTS = 3;
+const PUSH_MAX_ATTEMPTS = 4;
 const PUSH_RETRY_DELAY_MS = 1500;
 
 async function doPush(): Promise<boolean> {
@@ -302,6 +302,7 @@ async function doPush(): Promise<boolean> {
           state: faceStateOf(),
           driver: Number(settings.driver),
           address: currentAddress(),
+          scanTimeout: settings.scanTimeout,
         });
         pushStatusEl.textContent =
           `✓ ${report.planes} 平面 ${report.payloadBytes}B → 编码 ${report.encodedBytes}B / ${report.packets} 包`;
