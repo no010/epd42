@@ -446,8 +446,12 @@ scanBtn.addEventListener("click", () => void scanDevices());
 ["work", "short", "long", "rounds"].forEach((id) =>
   $(id).addEventListener("change", () => {
     syncSettings();
+    // 轮次即时同步到计时状态：圆点数量与"每 N 个长休"触发立刻生效
+    state.rounds = settings.rounds;
+    saveState(state);
     log(`时长已更新：${settings.workMin}/${settings.shortMin}/${settings.longMin} 分钟，每 ${settings.rounds} 个长休息`);
     redraw();
+    syncFace();
   }),
 );
 
