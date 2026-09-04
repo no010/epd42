@@ -1,13 +1,15 @@
-// 主入口：计时循环、UI 绑定、BLE 推送、系统通知。
+// 主入口：计时循环、UI 绑定、设置持久化、托盘联动、BLE 推送、系统通知。
 
 import { drawFace, lumaBytes } from "./face.js";
 import {
   DEFAULT_DURATIONS,
-  PomodoroState,
   Durations,
+  PHASE_NAMES,
+  PomodoroState,
   advance,
   clearSavedState,
   loadState,
+  mmss,
   newState,
   phaseSecondsFor,
   saveState,
@@ -18,6 +20,9 @@ declare global {
   interface Window {
     __TAURI__?: {
       core: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      event: {
+        listen: <T>(event: string, cb: (e: { payload: T }) => void) => Promise<void>;
+      };
     };
   }
 }
@@ -36,6 +41,17 @@ interface DeviceInfo {
   rssi: number | null;
 }
 
+interface Settings {
+  workMin: number;
+  shortMin: number;
+  longMin: number;
+  rounds: number;
+  pushEnabled: boolean;
+  pushInterval: number; // 分钟
+  driver: string;
+  autostart: boolean;
+}
+
 const $ = (id: string): HTMLElement => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`缺少 #${id}`);
@@ -44,7 +60,6 @@ const $ = (id: string): HTMLElement => {
 
 const canvas = $("screen") as HTMLCanvasElement;
 
-// ── 元素 ────────────────────────────────────────────────────────────────
 const statusEl = $("status");
 const pushStatusEl = $("push-status");
 const deviceEl = $("device") as HTMLSelectElement;
@@ -61,25 +76,73 @@ const roundsEl = $("rounds") as HTMLInputElement;
 const pushEnabledEl = $("push-enabled") as HTMLInputElement;
 const pushIntervalEl = $("push-interval") as HTMLInputElement;
 const driverEl = $("driver") as HTMLSelectElement;
+const autostartEl = $("autostart") as HTMLInputElement;
 
-// ── 状态 ────────────────────────────────────────────────────────────────
 const ADDR_KEY = "epd42-pomodoro-address";
+const SETTINGS_KEY = "epd42-pomodoro-settings";
 
-function readDurations(): Durations {
+// ── 设置持久化 ─────────────────────────────────────────────────────────────
+function defaultSettings(): Settings {
   return {
-    workMin: Math.max(1, Number(workEl.value) || DEFAULT_DURATIONS.workMin),
-    shortMin: Math.max(1, Number(shortEl.value) || DEFAULT_DURATIONS.shortMin),
-    longMin: Math.max(1, Number(longEl.value) || DEFAULT_DURATIONS.longMin),
-    rounds: Math.max(1, Math.round(Number(roundsEl.value) || DEFAULT_DURATIONS.rounds)),
+    workMin: DEFAULT_DURATIONS.workMin,
+    shortMin: DEFAULT_DURATIONS.shortMin,
+    longMin: DEFAULT_DURATIONS.longMin,
+    rounds: DEFAULT_DURATIONS.rounds,
+    pushEnabled: false,
+    pushInterval: 3,
+    driver: "2",
+    autostart: false,
   };
 }
 
-let state: PomodoroState = loadState() ?? newState(readDurations());
-let deadline = Date.now() / 1000 + state.remaining;
-let nextPushAt = Date.now() / 1000; // 立刻可推（首个倒计时内只推一次）
-let notifiedThisPhase = false;
+function loadSettings(): Settings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return defaultSettings();
+    return { ...defaultSettings(), ...(JSON.parse(raw) as Partial<Settings>) };
+  } catch {
+    return defaultSettings();
+  }
+}
 
-const settings: Durations = readDurations();
+function saveSettings(s: Settings): void {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+function applySettings(s: Settings): void {
+  workEl.value = String(s.workMin);
+  shortEl.value = String(s.shortMin);
+  longEl.value = String(s.longMin);
+  roundsEl.value = String(s.rounds);
+  pushEnabledEl.checked = s.pushEnabled;
+  pushIntervalEl.value = String(s.pushInterval);
+  driverEl.value = s.driver;
+  autostartEl.checked = s.autostart;
+}
+
+function syncSettings(): void {
+  settings.workMin = Math.max(1, Number(workEl.value) || DEFAULT_DURATIONS.workMin);
+  settings.shortMin = Math.max(1, Number(shortEl.value) || DEFAULT_DURATIONS.shortMin);
+  settings.longMin = Math.max(1, Number(longEl.value) || DEFAULT_DURATIONS.longMin);
+  settings.rounds = Math.max(1, Math.round(Number(roundsEl.value) || DEFAULT_DURATIONS.rounds));
+  settings.pushEnabled = pushEnabledEl.checked;
+  settings.pushInterval = Math.max(0, Number(pushIntervalEl.value) || 3);
+  settings.driver = driverEl.value;
+  saveSettings(settings);
+}
+
+function durationsOf(s: Settings): Durations {
+  return { workMin: s.workMin, shortMin: s.shortMin, longMin: s.longMin, rounds: s.rounds };
+}
+
+// ── 状态 ─────────────────────────────────────────────────────────────────
+let settings: Settings = loadSettings();
+applySettings(settings);
+
+let state: PomodoroState = loadState() ?? newState(durationsOf(settings));
+let deadline = Date.now() / 1000 + state.remaining;
+let nextPushAt = Date.now() / 1000;
+let lastTooltipAt = 0;
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) {
@@ -95,14 +158,35 @@ function log(message: string): void {
 }
 
 // ── 画面 ────────────────────────────────────────────────────────────────
-function redraw(): void {
-  drawFace(canvas, state);
-  statusEl.textContent =
-    `${state.running ? "▶" : "⏸"} 剩 ${remainingToText(state)}  本轮 ${state.pomodoroCount}/${state.rounds}`;
+function remainingToText(): string {
+  return `${Math.max(0, Math.ceil(state.remaining))}s`;
 }
 
-function remainingToText(state: PomodoroState): string {
-  return `${Math.max(0, Math.ceil(state.remaining))}s`;
+function redraw(): void {
+  drawFace(canvas, state);
+  const [zh] = PHASE_NAMES[state.phase];
+  statusEl.textContent =
+    `${state.running ? "▶" : "⏸"} 剩 ${remainingToText()}  本轮 ${state.pomodoroCount}/${state.rounds}`;
+  // 任务栏/标题实时显示：专注 23:41
+  document.title = `${state.running ? "▶" : "⏸"} ${zh} ${mmss(state.remaining)} · EPD42 番茄钟`;
+}
+
+// ── 托盘 ────────────────────────────────────────────────────────────────
+function listenTray(): void {
+  if (!window.__TAURI__) return;
+  const { event } = window.__TAURI__;
+  void event.listen<null>("menu-toggle", () => startBtn.click());
+  void event.listen<null>("menu-push", () => void doPush());
+}
+
+function updateTrayTooltip(): void {
+  if (!window.__TAURI__ || Date.now() - lastTooltipAt < 5000) return;
+  lastTooltipAt = Date.now();
+  const [zh] = PHASE_NAMES[state.phase];
+  const text = `${state.running ? "▶" : "⏸"} ${zh} ${mmss(state.remaining)} · 今日 ${state.cycleTotal} 个`;
+  invoke("set_tray_tooltip", { text }).catch(() => {
+    /* 气泡更新失败不影响计时 */
+  });
 }
 
 // ── 推送 ────────────────────────────────────────────────────────────────
@@ -117,7 +201,7 @@ async function doPush(): Promise<boolean> {
   try {
     const report = await invoke<PushReport>("push_frame", {
       pixels: Array.from(lumaBytes(canvas)),
-      driver: Number(driverEl.value),
+      driver: Number(settings.driver),
       address: currentAddress(),
     });
     pushStatusEl.textContent =
@@ -194,28 +278,28 @@ function tick(): void {
 
     if (state.remaining <= 0) {
       const previous = state.phase;
-      advance(state, settings);
+      advance(state, durationsOf(settings));
       state.running = true;
       deadline = Date.now() / 1000 + state.remaining;
-      notifiedThisPhase = false;
       log(`阶段切换：${previous} → ${state.phase}`);
       notifyPhase(
         "番茄钟",
         `${previous === "work" ? "专注结束" : "休息结束"}，开始${state.phase === "work" ? "专注" : "休息"}（${Math.ceil(state.remaining / 60)} 分钟）`,
       );
-      if (pushEnabledEl.checked) void doPush();
+      if (settings.pushEnabled) void doPush();
     }
   }
 
   // 周期推送（默认每 3 分钟）
   const now = Date.now() / 1000;
-  if (state.running && pushEnabledEl.checked) {
-    const interval = Math.max(0, Number(pushIntervalEl.value) * 60 || 180);
+  if (state.running && settings.pushEnabled) {
+    const interval = Math.max(0, settings.pushInterval * 60 || 180);
     if (interval > 0 && now >= nextPushAt) {
       void doPush();
       nextPushAt = now + interval;
     }
   }
+  updateTrayTooltip();
   redraw();
 }
 
@@ -234,7 +318,7 @@ startBtn.addEventListener("click", () => {
 });
 
 resetBtn.addEventListener("click", () => {
-  state.remaining = phaseSecondsFor(state.phase, settings);
+  state.remaining = phaseSecondsFor(state.phase, durationsOf(settings));
   state.running = false;
   deadline = Date.now() / 1000 + state.remaining;
   startBtn.textContent = "开始";
@@ -244,7 +328,7 @@ resetBtn.addEventListener("click", () => {
 
 skipBtn.addEventListener("click", () => {
   const previous = state.phase;
-  skip(state, settings);
+  skip(state, durationsOf(settings));
   state.running = true;
   deadline = Date.now() / 1000 + state.remaining;
   saveState(state);
@@ -254,19 +338,40 @@ skipBtn.addEventListener("click", () => {
 pushBtn.addEventListener("click", () => void doPush());
 scanBtn.addEventListener("click", () => void scanDevices());
 
-["work", "short", "long", "rounds"].forEach((id) => $(id).addEventListener("change", () => {
-  const dur = readDurations();
-  settings.workMin = dur.workMin;
-  settings.shortMin = dur.shortMin;
-  settings.longMin = dur.longMin;
-  settings.rounds = dur.rounds;
-  log(`时长已更新：${dur.workMin}/${dur.shortMin}/${dur.longMin} 分钟，每 ${dur.rounds} 个长休息`);
-  redraw();
-}));
+["work", "short", "long", "rounds"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    syncSettings();
+    log(`时长已更新：${settings.workMin}/${settings.shortMin}/${settings.longMin} 分钟，每 ${settings.rounds} 个长休息`);
+    redraw();
+  }),
+);
+
+pushEnabledEl.addEventListener("change", () => {
+  syncSettings();
+  log(`自动推送已${settings.pushEnabled ? "开启" : "关闭"}`);
+});
+pushIntervalEl.addEventListener("change", syncSettings);
+driverEl.addEventListener("change", syncSettings);
+
+autostartEl.addEventListener("change", () => {
+  syncSettings();
+  invoke<boolean>("set_autostart", { enabled: autostartEl.checked })
+    .then((actual) => {
+      autostartEl.checked = actual;
+      settings.autostart = actual;
+      saveSettings(settings);
+      log(`开机自启${actual ? "已开启" : "已关闭"}`);
+    })
+    .catch((err) => {
+      autostartEl.checked = settings.autostart;
+      const message = err instanceof Error ? err.message : String(err);
+      log(`设置开机自启失败：${message}`);
+    });
+});
 
 document.getElementById("wipe")?.addEventListener("click", () => {
   clearSavedState();
-  state = newState(readDurations());
+  state = newState(durationsOf(settings));
   state.running = false;
   deadline = Date.now() / 1000 + state.remaining;
   log("已清除计时状态");
@@ -275,18 +380,20 @@ document.getElementById("wipe")?.addEventListener("click", () => {
 
 // ── 启动 ────────────────────────────────────────────────────────────────
 function start(): void {
-  const dur = readDurations();
-  settings.workMin = dur.workMin;
-  settings.shortMin = dur.shortMin;
-  settings.longMin = dur.longMin;
-  settings.rounds = dur.rounds;
-  if (!state.running) {
-    startBtn.textContent = "开始";
-  } else {
-    startBtn.textContent = "暂停";
-  }
+  syncSettings();
+  if (state.running) startBtn.textContent = "暂停";
   redraw();
+  listenTray();
   void scanDevices();
+  // 回读开机自启的真实状态（避免覆盖系统设置）
+  invoke<boolean>("get_autostart")
+    .then((on) => {
+      autostartEl.checked = on;
+      settings.autostart = on;
+      saveSettings(settings);
+    })
+    .catch(() => {});
+  window.addEventListener("beforeunload", () => saveState(state));
   setInterval(tick, 250);
 }
 

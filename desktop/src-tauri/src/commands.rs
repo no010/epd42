@@ -51,3 +51,32 @@ pub async fn notify(app: tauri::AppHandle, title: String, body: String) -> Resul
         .show()
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+
+    if enabled {
+        app.autolaunch().enable().map_err(|e| e.to_string())?;
+    } else {
+        app.autolaunch().disable().map_err(|e| e.to_string())?;
+    }
+    Ok(app.autolaunch().is_enabled().unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn get_autostart(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn set_tray_tooltip(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    use tauri::tray::TrayIconId;
+
+    if let Some(tray) = app.tray_by_id(&TrayIconId::from("main")) {
+        let _ = tray.set_tooltip(Some(text.as_str()));
+    }
+    Ok(())
+}
