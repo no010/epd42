@@ -59,6 +59,24 @@ npx tauri build --no-bundle
 | 协议 | 同一套（bit 1=白、MSB 左、PackBits、20B 分包） | 与 `epd42-core` 单测锁定 |
 | 部署 | Python + Pillow（可选 bleak） | 免 Python，一个安装包 |
 
+## IPC 命名约定（防回归）
+
+Rust ↔ 前端跨语言传值有**两种驼峰转换机制**，历史上各踩过坑，改接口时务必对照：
+
+1. **Tauri 命令参数**（`invoke(...)` 的 key）：Tauri 自动把 Rust 蛇形参数转成
+   驼峰，前端必须发**同名驼峰键**，否则报 `missing required key ...`。
+   - `scan_devices(timeout_secs)` → 前端发 `{ timeoutSecs }`
+   - `push_frame(..., scan_timeout_secs)` → 前端发 `{ scanTimeoutSecs }`
+   - 单词参数（`state` / `driver` / `text` ...）两种写法相同，无需处理。
+2. **返回前端的 serde 结构体**：必须加 `#[serde(rename_all = "camelCase")]`，
+   否则前端按驼峰读不到字段、显示 `undefined`。
+   - 已加：`PushReport`（`ble.rs`）、`FaceState`（`core/face.rs`）。
+   - 新增结构体请同样加，并补一个序列化测试（参照 `ble.rs` 的
+     `push_report_serializes_camel_case`）。
+
+**改任何命令/结构体后自查两点**：前端 `invoke` 的每个 key 是否等于 Rust 参数的
+驼峰形式；返回结构体是否带 `rename_all = "camelCase"`。
+
 ## 桌面端特性
 
 * **系统托盘**：关窗驻托盘（tray 菜单才能真正退出）；左键单击/菜单"显示窗口"
@@ -71,7 +89,7 @@ npx tauri build --no-bundle
   烘焙，运行时零字体依赖）；对应 Python 版 face.py 的两处几何修正（沙面下沉、
   沙不出轮廓）都有单测锁定。
 * **周统计**：每天完成的番茄数记在 localStorage，近 7 天纯 CSS 条形图。
-* **推送自动重试**：失败最多重试 2 次（1.5s 退避），多次失败提示"设备可能离线"。
+* **推送自动重试**：失败最多 4 次尝试（重试 3 次、1.5s 退避），多次失败提示"设备可能离线"；扫描窗口用设置里的"扫描时长"（默认 10s）。
 * **全局快捷键**：Ctrl+Alt+P 暂停/继续，Ctrl+Alt+S 立即推送（tauri-plugin-global-shortcut）。
 * **标题栏实时倒计时**：任务栏可见 `▶ 专注 23:41 · EPD42 番茄钟`。
 * 推送节奏沿用"每 3 分钟一次／切换时一次"的墨水屏习惯。
