@@ -1,0 +1,22 @@
+[package]
+name = "epd42-pomodoro"
+version = "0.1.0"
+edition = "2021"
+description = "EPD42 番茄钟桌面版（Tauri v2 + Rust + TS 前端）"
+
+[lib]
+name = "epd42_pomodoro_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+epd42-core = { path = "../core" }
+btleplug = "0.11"
+uuid = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["time", "sync"] }

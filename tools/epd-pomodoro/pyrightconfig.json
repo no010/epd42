@@ -1,0 +1,7 @@
+{
+  "include": ["."],
+  "extraPaths": ["../epd-monitor"],
+  "venvPath": "..",
+  "venv": "epd-monitor/.venv",
+  "pythonVersion": "3.12"
+}

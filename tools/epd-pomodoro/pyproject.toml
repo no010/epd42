@@ -1,0 +1,23 @@
+[project]
+name = "epd-pomodoro"
+version = "0.1.0"
+description = "Pomodoro timer for the EPD42 e-ink display: countdown in the terminal, face composed on the PC, streamed as packed bits over BLE"
+requires-python = ">=3.10"
+dependencies = [
+    "bleak>=0.22",          # BLE client (shared with tools/epd-monitor)
+    "pillow>=10",           # the PC does the drawing, the device does not
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[tool.uv]
+# Same flat-script setup as tools/epd-monitor: modules import each other by
+# name and the shared render/protocol/ble_client/config are pulled from the
+# sibling epd-monitor directory at runtime, so nothing needs packaging.
+package = false
+[tool.ty.environment]
+# Run the check as: ty check --project .
+# (`--project .` pins ty's project root to this tool dir; plain `ty check` from
+# a subdir walks up to the git root, and its path args resolve there too.)
+python-version = "3.12"
+python-platform = "all"   # termios/tty live on Unix, msvcrt on Windows: check both
+extra-paths = ["../epd-monitor"]   # shared sibling modules, resolved from this dir

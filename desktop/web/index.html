@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EPD42 番茄钟</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <h1>EPD42 番茄钟</h1>
+
+    <canvas id="screen" width="400" height="300"></canvas>
+
+    <div id="status" class="status"></div>
+
+    <section class="controls">
+      <div class="row">
+        <button id="start" class="primary">开始</button>
+        <button id="reset">重置</button>
+        <button id="skip">跳过</button>
+        <button id="wipe">清空</button>
+      </div>
+      <div class="row">
+        <label>设备
+          <select id="device"></select>
+        </label>
+        <button id="scan">扫描</button>
+        <select id="driver">
+          <option value="1">4.2in BW (UC8176)</option>
+          <option value="2" selected>4.2in V2 (BW)</option>
+          <option value="3">4.2in B V2 (BWR)</option>
+        </select>
+        <button id="push" class="primary">推送到墨水屏</button>
+      </div>
+      <div class="row" id="push-status"></div>
+    </section>
+
+    <section class="settings">
+      <div class="grid">
+        <label>专注（分）<input id="work" type="number" min="1" value="25" /></label>
+        <label>短休（分）<input id="short" type="number" min="1" value="5" /></label>
+        <label>长休（分）<input id="long" type="number" min="1" value="15" /></label>
+        <label>每 N 个长休<input id="rounds" type="number" min="1" value="4" /></label>
+        <label class="check"><input id="push-enabled" type="checkbox" /> 自动推送</label>
+        <label>推送间隔（分）<input id="push-interval" type="number" min="0" value="3" /></label>
+      </div>
+    </section>
+
+    <pre id="log"></pre>
+  </main>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

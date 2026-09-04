@@ -1,0 +1,36 @@
+# EPD42 番茄钟 —— 示例配置
+# 复制为 config.toml 使用（config.toml、state.json 已被 gitignore，不会提交）。
+# 不建 config.toml 也能跑：所有命令都有默认值。先跑 `python pomodoro.py scan`
+# 找到墨水屏，把 device_address 填进来，之后每次连接就跳过扫描。
+
+# ── 设备 ──────────────────────────────────────────────────────────────────
+# BLE 广播名：固件广播 "NRF_EPD_" + MAC 尾两字节
+device_name = "NRF_EPD"
+
+# 可选：固定 BLE 地址（macOS 是 UUID，Windows/Linux 是 MAC），填了跳过扫描
+device_address = ""
+
+# BLE 扫描超时（秒）
+scan_timeout = 15
+
+# 日志级别 DEBUG / INFO / WARNING / ERROR
+log_level = "INFO"
+
+# 流式写入用 write-without-response（约快 3 倍，丢包只能靠整帧校验兜底）
+fast_write = false
+
+# 屏幕字体：留空自动选系统 CJK 字体 + 等宽数字字体；可指定 TTF/TTC 路径
+font_path = ""
+
+# ── 番茄钟参数 ────────────────────────────────────────────────────────────
+work_minutes  = 25     # 专注时长（分钟）
+short_minutes = 5      # 短休息时长（分钟）
+long_minutes  = 15     # 长休息时长（分钟）
+rounds        = 4      # 每几个番茄进入一次长休息
+
+# `start --push` 时每隔多少秒把画面推一次到墨水屏；0 = 只在阶段切换时推。
+# 画面是分钟级沙漏，不显示秒，一般 3-5 分钟刷一次即可（180 = 3 分钟）。
+push_interval = 180
+
+# 计时状态文件路径（默认：本目录 state.json）
+# state_file = ""

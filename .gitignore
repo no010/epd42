@@ -99,3 +99,14 @@ tools/epd-monitor/preview.png
 
 # Playwright persistent login profiles (session cookies - never commit)
 tools/epd-monitor/profiles/
+# Local Pomodoro tool state and outputs
+tools/epd-pomodoro/config.toml
+tools/epd-pomodoro/state.json
+tools/epd-pomodoro/state.json.tmp
+tools/epd-pomodoro/preview.png
+tools/epd-pomodoro/dist/
+# Tauri desktop app
+desktop/target/
+desktop/src-tauri/gen/
+desktop/web/node_modules/
+desktop/web/dist/

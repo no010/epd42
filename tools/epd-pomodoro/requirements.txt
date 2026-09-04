@@ -1,0 +1,6 @@
+# EPD42 番茄钟 —— 最小依赖（Python 3.10+）
+# 渲染预览图 + 计时只依赖 Pillow。
+# 蓝牙推送（push / scan / describe / setdriver）是可选功能，再装：
+#   python -m pip install bleak
+pillow>=10
+tomli>=2.0.0; python_version < "3.11"

@@ -1,0 +1,53 @@
+use std::sync::Mutex;
+
+use tauri::State;
+
+use crate::ble;
+
+#[derive(Default)]
+pub struct AppState {
+    /// 最近一次成功推送用的设备地址（前端也可自行记忆，这里作为兜底）。
+    pub last_address: Mutex<Option<String>>,
+}
+
+#[tauri::command]
+pub async fn scan_devices(timeout_secs: u64) -> Result<Vec<ble::DeviceInfo>, String> {
+    let _ = timeout_secs;
+    ble::scan_devices(4).await
+}
+
+#[tauri::command]
+pub async fn push_frame(
+    pixels: Vec<u8>,
+    driver: u8,
+    address: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ble::PushReport, String> {
+    let chosen = match address {
+        Some(addr) if !addr.trim().is_empty() => Some(addr.trim().to_string()),
+        _ => state
+            .last_address
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or(None),
+    };
+    let report = ble::push_frame(chosen.as_deref(), &pixels, driver).await?;
+    if let Some(addr) = chosen {
+        if let Ok(mut guard) = state.last_address.lock() {
+            *guard = Some(addr);
+        }
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub async fn notify(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
