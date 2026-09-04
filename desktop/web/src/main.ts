@@ -9,6 +9,7 @@ import {
   clearSavedState,
   lastNDays,
   loadState,
+  MAX_ROUNDS,
   mmss,
   newState,
   phaseSecondsFor,
@@ -130,7 +131,7 @@ function syncSettings(): void {
   settings.workMin = Math.max(1, Number(workEl.value) || DEFAULT_DURATIONS.workMin);
   settings.shortMin = Math.max(1, Number(shortEl.value) || DEFAULT_DURATIONS.shortMin);
   settings.longMin = Math.max(1, Number(longEl.value) || DEFAULT_DURATIONS.longMin);
-  settings.rounds = Math.max(1, Math.round(Number(roundsEl.value) || DEFAULT_DURATIONS.rounds));
+  settings.rounds = Math.min(MAX_ROUNDS, Math.max(1, Math.round(Number(roundsEl.value) || DEFAULT_DURATIONS.rounds)));
   settings.scanTimeout = Math.min(60, Math.max(3, Number(scanTimeoutEl.value) || 10));
   settings.pushEnabled = pushEnabledEl.checked;
   settings.pushInterval = Math.max(0, Number(pushIntervalEl.value) || 3);
@@ -150,6 +151,7 @@ let state: PomodoroState = loadState() ?? newState(durationsOf(settings));
 let deadline = Date.now() / 1000 + state.remaining;
 let nextPushAt = Date.now() / 1000;
 let lastTooltipAt = 0;
+let isPushing = false;   // 防止并发推送抢同一台设备
 
 function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!window.__TAURI__) {
@@ -282,10 +284,16 @@ function currentAddress(): string | null {
   return localStorage.getItem(ADDR_KEY);
 }
 
+function pushIntervalSecs(): number {
+  return Math.max(0, settings.pushInterval * 60 || 180);
+}
+
 const PUSH_MAX_ATTEMPTS = 3;
 const PUSH_RETRY_DELAY_MS = 1500;
 
 async function doPush(): Promise<boolean> {
+  if (isPushing) return false;   // 已有推送在进行，跳过本次，避免并发
+  isPushing = true;
   pushBtn.disabled = true;
   try {
     for (let attempt = 1; attempt <= PUSH_MAX_ATTEMPTS; attempt += 1) {
@@ -317,6 +325,7 @@ async function doPush(): Promise<boolean> {
     }
     return false;
   } finally {
+    isPushing = false;
     pushBtn.disabled = false;
   }
 }
@@ -390,14 +399,19 @@ function tick(): void {
         "番茄钟",
         `${previous === "work" ? "专注结束" : "休息结束"}，开始${state.phase === "work" ? "专注" : "休息"}（${Math.ceil(state.remaining / 60)} 分钟）`,
       );
-      if (settings.pushEnabled) void doPush();
+      saveState(state);
+      if (settings.pushEnabled) {
+        void doPush();
+        // 阶段切换推过一次后，顺延下一次周期推送，避免紧接着重复推
+        nextPushAt = Date.now() / 1000 + pushIntervalSecs();
+      }
     }
   }
 
   // 周期推送（默认每 3 分钟）
   const now = Date.now() / 1000;
   if (state.running && settings.pushEnabled) {
-    const interval = Math.max(0, settings.pushInterval * 60 || 180);
+    const interval = pushIntervalSecs();
     if (interval > 0 && now >= nextPushAt) {
       void doPush();
       nextPushAt = now + interval;

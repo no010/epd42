@@ -19,6 +19,9 @@ export interface Durations {
 
 export const DEFAULT_DURATIONS: Durations = { workMin: 25, shortMin: 5, longMin: 15, rounds: 4 };
 
+// 圆点要画进 400px 宽度：轮次上限防止圆点溢出画面
+export const MAX_ROUNDS = 12;
+
 export interface PomodoroState {
   phase: Phase;
   phaseSeconds: number;
@@ -62,7 +65,7 @@ export function newState(dur: Durations): PomodoroState {
     pomodoroCount: 0,
     cycleTotal: 0,
     cycleDate: today(),
-    rounds: Math.max(1, Math.round(dur.rounds)),
+    rounds: Math.min(MAX_ROUNDS, Math.max(1, Math.round(dur.rounds))),
     updatedAt: Date.now() / 1000,
   };
 }
@@ -90,7 +93,7 @@ export function loadState(): PomodoroState | null {
       pomodoroCount: Math.trunc(data.pomodoroCount ?? 0),
       cycleTotal: Math.trunc(data.cycleTotal ?? 0),
       cycleDate: typeof data.cycleDate === "string" ? data.cycleDate : "",
-      rounds: Math.max(1, Math.trunc(data.rounds ?? 4)),
+      rounds: Math.min(MAX_ROUNDS, Math.max(1, Math.trunc(data.rounds ?? 4))),
       updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
     };
     // 加载时若在运行中，按墙钟回拨
