@@ -12,6 +12,7 @@ import sys
 import tempfile
 
 import httpx
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -327,7 +328,9 @@ def test_kimi_token() -> None:
 
         gone = "a 401 clears the stored token and names the re-login command"
         try:
-            asyncio.run(_token_fetch("kimi-web", {"timeout": 5}, root=root,
+            asyncio.run(_token_fetch("kimi-web", {"timeout": 5,
+                                                  "auto_refresh": False},
+                                     root=root,
                                      transport=httpx.MockTransport(expired)))
         except ProviderError as exc:
             check("login --provider kimi-web" in str(exc), gone)
@@ -337,13 +340,142 @@ def test_kimi_token() -> None:
               "the expired token file is removed after a 401")
         _drop_token("kimi-web", root)
 
+        try:
+            asyncio.run(_token_fetch("deepseek-web", {"auto_refresh": False},
+                                     root=root))
+        except ProviderError as exc:
+            check("no saved token" in str(exc) and "deepseek-web" in str(exc),
+                  "a wired provider with no stored token gets the login hint")
+        else:
+            check(False,
+                  "a wired provider with no stored token gets the login hint")
+
+
+
+def test_deepseek_token() -> None:
+    print("deepseek token mode")
+    from urllib.parse import parse_qs, urlparse
+
+    from providers.webquota import (_drop_token, _load_token,
+                                    _token_fetch, token_capture_login)
+
+    summary = {"code": 0, "data": {"biz_data": {
+        "normal_wallets": [{"currency": "CNY",
+                            "balance": "59.1114450400000000"}],
+        "total_costs": [{"currency": "CNY",
+                         "amount": "271.1589545600000000"}]}}}
+
+    def usage_body(start: int) -> dict:
+        return {"code": 0, "data": {"biz_data": {"series": [
+            {"model": "deepseek-v4-flash", "buckets": [
+                {"time": start, "usage": {"RESPONSE_TOKEN": 10_000_000,
+                                          "PROMPT_CACHE_HIT_TOKEN": 5_000_000}}]},
+            {"model": "deepseek-v4-pro", "buckets": [
+                {"time": start, "usage": {"RESPONSE_TOKEN": 5_000_000}}]}]}}}
+
+    def cost_body(start: int) -> dict:
+        return {"code": 0, "data": {"biz_data": {"data": [{"series": [
+            {"model": "deepseek-v4-flash", "buckets": [
+                {"time": start, "cost": "0.5"}]}]}]}}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        query = parse_qs(urlparse(url).query)
+        start = int(query.get("start", ["0"])[0])
+        if "get_user_summary" in url:
+            return httpx.Response(200, json=summary)
+        if "usage/by_api_key/amount" in url:
+            return httpx.Response(200, json=usage_body(start))
+        if "usage/by_api_key/cost" in url:
+            return httpx.Response(200, json=cost_body(start))
+        return httpx.Response(404, json={})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        check(token_capture_login("deepseek-web", token="sk-ds-token-123",
+                                  root=root) is True,
+              "a pasted Authorization header is saved without a browser")
+        check(_load_token("deepseek-web", root).get("authorization")
+              == "Bearer sk-ds-token-123",
+              "a bare token is normalised to a Bearer header")
+
+        items = asyncio.run(_token_fetch("deepseek-web", {"timeout": 5},
+                                         root=root,
+                                         transport=httpx.MockTransport(handler)))
+        check(items[0].balance == 5911, "balance parses to cents over httpx")
+        check(items[0].extra == "/ ¥271", "lifetime spend rides the metrics line")
+        for part in ("tdy ¥0.50", "tok 20.0M", "F75%/P25%"):
+            check(part in items[0].note, f"note carries {part!r}")
+
+        def expired(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={})
+
+        gone = "a 401 clears the deepseek token and names the re-login command"
+        try:
+            asyncio.run(_token_fetch("deepseek-web", {"timeout": 5,
+                                                      "auto_refresh": False},
+                                     root=root,
+                                     transport=httpx.MockTransport(expired)))
+        except ProviderError as exc:
+            check("login --provider deepseek-web" in str(exc), gone)
+        else:
+            check(False, gone)
+        check(not Path(tmp, "deepseek-web", "token.json").exists(),
+              "the expired deepseek token is removed after a 401")
+        _drop_token("deepseek-web", root)
+
     try:
-        asyncio.run(_token_fetch("deepseek-web", {}))
+        asyncio.run(_token_fetch("aliyun-web", {}))
     except ProviderError as exc:
-        check("kimi-web only" in str(exc),
-              "token mode refuses providers it is not wired for (pilot)")
+        check("kimi-web, deepseek-web" in str(exc),
+              "token mode names exactly the providers it is wired for")
     else:
-        check(False, "token mode refuses providers it is not wired for (pilot)")
+        check(False, "token mode names exactly the providers it is wired for")
+
+
+
+def test_token_auto_refresh() -> None:
+    print("token auto-refresh")
+    from providers import webquota as wq
+    from providers.webquota import _save_token, _token_fetch
+
+    stats_body = {"ratelimitCode5h": {"ratio": 0.05, "enabled": True,
+                                      "resetTime": "2026-09-07T10:22:33Z"},
+                  "ratelimitCode7d": {"ratio": 0.2, "enabled": True,
+                                      "resetTime": "2026-09-05T01:22:33Z"},
+                  "subscriptionBalance": {"amountUsedRatio": 0.1,
+                                          "expireTime":
+                                              "2026-09-25T01:22:33Z"}}
+    stats_hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("GetSubscriptionStats"):
+            stats_hits["n"] += 1
+            if stats_hits["n"] == 1:
+                return httpx.Response(401, json={})
+            return httpx.Response(200, json=stats_body)
+        return httpx.Response(404, json={})
+
+    def fake_capture(provider_type: str, timeout_s: float = 540.0, *,
+                     headed: bool = True, token: str | None = None,
+                     root=None) -> bool:
+        _save_token("kimi-web", {"authorization": "Bearer fresh",
+                                 "captured_at": "2026-09-07T18:00:00+08:00"},
+                    root=root)
+        return True
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _save_token("kimi-web", {"authorization": "Bearer stale",
+                                 "captured_at": "2026-09-07T17:00:00+08:00"},
+                    root=root)
+        with mock.patch.object(wq, "token_capture_login", fake_capture):
+            items = asyncio.run(_token_fetch("kimi-web", {"timeout": 5},
+                                             root=root,
+                                             transport=httpx.MockTransport(handler)))
+        check(items[0].plan_name.startswith("Kimi"),
+              "a 401 re-captures headless and the card still renders")
+        check(stats_hits["n"] == 2, "exactly one retry after the 401")
 
 
 def test_registry() -> None:
@@ -451,7 +583,9 @@ def main() -> int:
     for test in (test_aliyun_signing, test_aliyun_parsing, test_webquota_parsers,
                  test_bailian_gateway, test_bailian_parsing,
                  test_bailian_login_url, test_bailian_callback_parsing,
-                 test_bailian_store, test_kimi_token, test_registry):
+                 test_bailian_store, test_kimi_token,
+                 test_deepseek_token, test_token_auto_refresh,
+                 test_registry):
         test()
     print("\nall checks passed")
     return 0

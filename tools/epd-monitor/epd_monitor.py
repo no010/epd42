@@ -202,6 +202,10 @@ def main() -> int:
                         help="login: which provider to sign in")
     parser.add_argument("--no-browser", action="store_true",
                         help="login: print the sign-in URL instead of opening one")
+    parser.add_argument("--token", default="",
+                        help="login: paste the Authorization header (e.g. "
+                             "'Bearer sk-...') you copied from DevTools so "
+                             "auth=token needs no browser at all")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
@@ -277,11 +281,11 @@ def main() -> int:
 
                 login_from_config(own, open_browser=not args.no_browser)
             elif str(own.get("auth", "")).strip().lower() == "token":
-                # Capture the SPA's in-memory credential so later fetches can
-                # run as pure httpx (pilot: kimi-web).
+                # Capture the SPA's in-memory credential (or accept one pasted
+                # from DevTools) so later fetches run as pure httpx.
                 from providers.webquota import token_capture_login
 
-                token_capture_login(args.provider)
+                token_capture_login(args.provider, token=args.token or None)
             else:
                 from providers.webquota import open_login
 

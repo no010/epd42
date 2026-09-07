@@ -698,6 +698,8 @@ KIMI_ORIGIN = "https://www.kimi.com"
 KIMI_MEMBERSHIP_API = (KIMI_ORIGIN
                        + "/apiv2/kimi.gateway.membership.v2.MembershipService")
 KIMI_STATS_URL = KIMI_MEMBERSHIP_API + "/GetSubscriptionStats"
+_TOKEN_PROVIDERS = ("kimi-web", "deepseek-web")
+
 KIMI_SUBSCRIPTION_URL = KIMI_MEMBERSHIP_API + "/GetSubscription"
 
 _TOKEN_FIELDS = ("authorization", "cookie", "user_agent",
@@ -766,23 +768,42 @@ def _capture_membership_headers(provider_type: str, recipe: Recipe,
 
 
 def token_capture_login(provider_type: str, timeout_s: float = 540.0,
-                        *, headed: bool = True) -> bool:
-    """Headed sign-in that also persists the SPA credential for token mode.
+                        *, headed: bool = True, token: str | None = None,
+                        root: Path | None = None) -> bool:
+    """Persist the SPA credential so ``auth = "token"`` can fetch via httpx.
 
-    Like ``_login`` but additionally records the in-memory ``Authorization``
-    header, the request cookies and the UA on the membership API, then saves
-    them to ``profiles/<type>/token.json`` (gitignored, 0600 best-effort).
-    Return True when a token was stored.  With ``headed=False`` the existing
-    profile is reused headless, for re-capturing a still-live session.
+    Two ways in:
+
+    - headed browser: like ``_login``, plus records the in-memory
+      ``Authorization`` header, cookies and UA on the API endpoints the card
+      parses, then saves them to ``profiles/<type>/token.json`` (gitignored,
+      0600 best-effort).  ``headed=False`` reuses the existing profile headless
+      for a still-live session.
+    - ``token=...``: no browser at all - paste the ``Authorization`` value you
+      copied from your own browser's DevTools (Network -> the API request ->
+      Request Headers).  A missing ``Bearer `` prefix is added for you.
+
+    Returns True when a credential was stored.
     """
     recipe = RECIPES.get(provider_type)
     if recipe is None:
         raise ProviderError(f"unknown web provider '{provider_type}'; "
                             f"known: {sorted(RECIPES)}")
-    if provider_type != "kimi-web":
+    if provider_type not in ("kimi-web", "deepseek-web"):
         raise ProviderError(
-            f"[{provider_type}] token capture is wired for kimi-web only "
-            "(pilot) - keep using the playwright path for now")
+            f"[{provider_type}] token capture is wired for kimi-web and "
+            "deepseek-web only - keep using the playwright path for now")
+    if token is not None:
+        token = token.strip()
+        if not token.lower().startswith("bearer "):
+            token = f"Bearer {token}"
+        path = _save_token(provider_type,
+                           {"authorization": token,
+                            "captured_at": datetime.now().astimezone()
+                            .isoformat(timespec="seconds")}, root=root)
+        print(f"[{provider_type}] token saved from the clipboard/devtools to "
+              f"{path} (auth {_mask_secret(token)})")
+        return True
     profile = _profile_dir(provider_type)
     captured: dict[str, list[dict[str, Any]]] = {}
     auth: dict[str, str] = {}
@@ -861,7 +882,7 @@ def token_capture_login(provider_type: str, timeout_s: float = 540.0,
     auth["user_agent"] = user_agent
     auth["get_subscription_body"] = body
     auth["captured_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    path = _save_token(provider_type, auth)
+    path = _save_token(provider_type, auth, root=root)
     print(f"[{provider_type}] token saved to {path} "
           f"(auth {_mask_secret(auth['authorization'])}, "
           f"cookie {_mask_secret(auth.get('cookie', ''))}, "
@@ -887,27 +908,108 @@ async def _kimi_post(client: httpx.AsyncClient, url: str,
     return resp.status_code, data if isinstance(data, dict) else {}
 
 
+class _Token401(ProviderError):
+    """Internal signal: the stored credential drew a 401; let the dispatcher
+    decide whether a headless re-capture is possible before dropping it."""
+
+
+def _expired_error(name: str) -> ProviderError:
+    return ProviderError(
+        f"[{name}] the saved token expired - token cleared, run "
+        f"'python epd_monitor.py login --provider {name}' once "
+        "(headed, or paste the Authorization header with --token)")
+
+
+def _no_token_error(name: str) -> ProviderError:
+    return ProviderError(
+        f"[{name}] no saved token - run "
+        f"'python epd_monitor.py login --provider {name}' once "
+        "(headed, or paste the Authorization header with --token)")
+
+
+async def _replay_credential(name: str, cfg: dict[str, Any],
+                             root: Path | None) -> bool:
+    """One headless re-capture from the still-live browser profile.
+
+    Kimi's bearer token is short-lived (observed < ~1 h) and DeepSeek's is
+    unmeasured, so a 401 (or an empty store) triggers this instead of failing
+    the poll: the profile's own session is what keeps the card alive.
+    """
+    timeout_s = max(10.0, float(cfg.get("refresh_timeout", 20) or 20))
+    return await asyncio.to_thread(token_capture_login, name,
+                                   timeout_s=timeout_s, headed=False,
+                                   root=root)
+
+
 async def _token_fetch(name: str, cfg: dict[str, Any], *,
                        root: Path | None = None,
                        transport: httpx.AsyncBaseTransport | None = None,
                        ) -> list[SubscriptionItem]:
-    """Fetch the card with pure httpx using the captured credential.
+    """Fetch with pure httpx; auto-heal a stale or missing credential.
 
-    Opt in with ``auth = "token"`` in the provider config.  On a 401 the
-    saved token is dropped and the card reports the re-login command - the
-    panel never shows stale numbers.
+    Opt in with ``auth = "token"`` in the provider config.  On a 401 (or an
+    empty store) and ``auto_refresh`` (default on) the credential is re-captured
+    headless from the existing browser profile and the fetch retried once; when
+    that fails or auto-refresh is off, the token is dropped and the card
+    reports the login command - never stale numbers.
     """
-    if name != "kimi-web":
+    if name not in _TOKEN_PROVIDERS:
         raise ProviderError(
-            f"[{name}] token mode is wired for kimi-web only (pilot)")
-    recipe = RECIPES[name]
+            f"[{name}] token mode is wired for {', '.join(_TOKEN_PROVIDERS)} "
+            "only (pilot)")
+    auto = bool(cfg.get("auto_refresh", True))
+    try:
+        return await _token_fetch_once(name, cfg, root=root,
+                                       transport=transport)
+    except _Token401:
+        if not auto:
+            _drop_token(name, root)
+            raise _expired_error(name) from None
+        if not await _replay_credential(name, cfg, root):
+            _drop_token(name, root)
+            raise ProviderError(
+                f"[{name}] the saved token expired and the browser session "
+                "cannot be replayed - run "
+                f"'python epd_monitor.py login --provider {name}' once "
+                "(headed)") from None
+        try:
+            return await _token_fetch_once(name, cfg, root=root,
+                                           transport=transport)
+        except _Token401:
+            _drop_token(name, root)
+            raise _expired_error(name) from None
+
+
+async def _token_fetch_once(name: str, cfg: dict[str, Any], *,
+                            root: Path | None = None,
+                            transport: httpx.AsyncBaseTransport | None = None,
+                            ) -> list[SubscriptionItem]:
     token = _load_token(name, root)
-    authorization = token.get("authorization", "")
-    if not authorization:
-        raise ProviderError(
-            f"[{name}] no saved token - run "
-            "'python epd_monitor.py login --provider kimi-web' once "
-            "(headed; it captures the SPA credential for auth=token mode)")
+    if not token.get("authorization", ""):
+        if bool(cfg.get("auto_refresh", True)):
+            if not await _replay_credential(name, cfg, root):
+                raise ProviderError(
+                    f"[{name}] no saved token and the browser session cannot "
+                    "be replayed - run "
+                    f"'python epd_monitor.py login --provider {name}' once "
+                    "(headed)") from None
+            token = _load_token(name, root)
+        if not token.get("authorization", ""):
+            raise _no_token_error(name)
+    if name == "kimi-web":
+        return await _kimi_token_fetch(name, cfg, token, root=root,
+                                       transport=transport)
+    return await _ds_token_fetch(name, cfg, token, root=root,
+                                 transport=transport)
+
+
+async def _kimi_token_fetch(name: str, cfg: dict[str, Any],
+                            token: dict[str, str], *, root: Path | None,
+                            transport: httpx.AsyncBaseTransport | None,
+                            ) -> list[SubscriptionItem]:
+    """httpx replay of the quota tab's two membership calls."""
+    recipe = RECIPES[name]
+    authorization = token["authorization"]
     timeout = float(cfg.get("timeout", 20) or 20)
     headers = {
         "Accept": "*/*",
@@ -927,13 +1029,9 @@ async def _token_fetch(name: str, cfg: dict[str, Any], *,
     async with httpx.AsyncClient(timeout=timeout, headers=headers,
                                  transport=transport) as client:
         status, stats = await _kimi_post(client, KIMI_STATS_URL, "{}")
+        if stats is None and status == 401:
+            raise _Token401(f"[{name}] saved token expired (HTTP 401)")
         if stats is None:
-            if status == 401:
-                _drop_token(name, root)
-                raise ProviderError(
-                    f"[{name}] the saved token expired (HTTP 401) - token "
-                    "cleared, run 'python epd_monitor.py login "
-                    "--provider kimi-web' again")
             raise ProviderError(f"[{name}] GetSubscriptionStats HTTP {status}")
         # The title/credits live in GetSubscription; a wrong body just loses
         # the title - the stats response carries subscriptionBalance on the
@@ -948,3 +1046,72 @@ async def _token_fetch(name: str, cfg: dict[str, Any], *,
     bodies: dict[str, Any] = {KIMI_STATS_FRAGMENT: [stats],
                               KIMI_SUBSCRIPTION_FRAGMENT: [sub]}
     return recipe.parse(bodies)
+
+async def _ds_token_fetch(name: str, cfg: dict[str, Any],
+                          token: dict[str, str], *, root: Path | None,
+                          transport: httpx.AsyncBaseTransport | None,
+                          ) -> list[SubscriptionItem]:
+    """httpx replay of the DeepSeek usage tab: summary + today's cost/amount.
+
+    The day window is the one the page itself frames (day-aligned, tz=28800);
+    the replay URLs already enforce that, so the card mirrors the browser path.
+    """
+    recipe = RECIPES[name]
+    timeout = float(cfg.get("timeout", 20) or 20)
+    headers = {
+        "Accept": "*/*",
+        "Origin": DEEPSEEK_ORIGIN,
+        "Referer": DEEPSEEK_ORIGIN + "/usage",
+        "Authorization": token["authorization"],
+        "User-Agent": token.get("user_agent") or _DEFAULT_UA,
+    }
+    cookie = token.get("cookie", "")
+    if cookie:
+        headers["Cookie"] = cookie
+    amount_url, cost_url = _deepseek_replay_urls(datetime.now().astimezone())
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers,
+                                 transport=transport) as client:
+        s_sum, summary = await _ds_get(client, DEEPSEEK_SUMMARY_URL)
+        s_amt, amount = await _ds_get(client, amount_url)
+        s_cost, cost = await _ds_get(client, cost_url)
+
+    if 401 in (s_sum, s_amt, s_cost):
+        raise _Token401(f"[{name}] saved token expired (HTTP 401)")
+    bad = {label: status for label, status in
+           (("summary", s_sum), ("amount", s_amt), ("cost", s_cost))
+           if status != 200}
+    if bad:
+        raise ProviderError(f"[{name}] DeepSeek API errors: {bad}")
+    if not summary or not amount or not cost:
+        raise ProviderError(f"[{name}] DeepSeek API returned an empty body")
+
+    bodies: dict[str, Any] = {DEEPSEEK_SUMMARY_FRAGMENT: [summary],
+                              DEEPSEEK_AMOUNT_FRAGMENT: [amount],
+                              DEEPSEEK_COST_FRAGMENT: [cost]}
+    return recipe.parse(bodies)
+
+
+async def _ds_get(client: httpx.AsyncClient,
+                  url: str) -> tuple[int, dict[str, Any] | None]:
+    """GET one DeepSeek endpoint; never raises on an HTTP refusal so the
+    caller can tell a 401 from other failures."""
+    try:
+        resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        raise ProviderError(
+            f"[deepseek-web] {url.split('/api/v0/', 1)[-1]} request failed: "
+            f"{exc}") from exc
+    if resp.status_code != 200:
+        return resp.status_code, None
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.status_code, {}
+    return resp.status_code, data if isinstance(data, dict) else {}
+
+
+DEEPSEEK_ORIGIN = "https://platform.deepseek.com"
+DEEPSEEK_SUMMARY_URL = DEEPSEEK_ORIGIN + "/api/v0/users/get_user_summary"
+_DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")

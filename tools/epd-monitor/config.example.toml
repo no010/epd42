@@ -93,7 +93,26 @@ name = "DeepSeek"
 # token file); until it is proven stable, keep an eye on the card.
 [[providers]]
 type = "kimi-web"
+# Token-mode pilot (kimi-web + deepseek-web): the login additionally
+# saves the SPA's in-memory Bearer credential to profiles/<type>/token.json
+# (gitignored), and with auth = "token" every fetch is a plain httpx call -
+# no browser is launched per poll.  Two ways to supply the credential:
+#   uv run python epd_monitor.py login --provider kimi-web      # headed sign-in
+#   uv run python epd_monitor.py login --provider deepseek-web --token "Bearer sk-..."
+#                                                              # or paste from DevTools
+# A 401 auto-heals (default): the credential is re-captured headless from the
+# live profile and the fetch retried; set auto_refresh = false to fail hard.
+# Token lifetime
+# is still being measured (recorded as captured_at); keep an eye on the cards.
+[[providers]]
+type = "kimi-web"
 name = "Kimi"
+auth = "token"             # pilot: httpx-only fetches; remove for the browser path
+# auto_refresh = true      # heal a 401 by re-capturing headless; false = fail hard
+
+[[providers]]
+type = "deepseek-web"
+name = "DeepSeek"
 auth = "token"             # pilot: httpx-only fetches; remove for the browser path
 # ─── Aliyun Bailian Token Plan (console gateway: no browser, no CLI needed) ────
 # The same numbers the console page shows, fetched with a console access token -

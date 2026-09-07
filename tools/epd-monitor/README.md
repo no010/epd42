@@ -152,30 +152,50 @@ updates, where a single row can be resent on its own.
 | `aliyun`   | Aliyun resource packages (BSS OpenAPI) | Package total/remaining tokens |
 | `deepseek-web`, `kimi-web`, `aliyun-web` | Web-session scraping (Playwright + local Edge) | The console's own numbers, no API keys |
 
-### Kimi token-mode pilot (`auth = "token"`)
+### Token-mode pilot (`auth = "token"`; kimi-web + deepseek-web)
 
-Kimi has no official loopback token channel like Bailian, but its SPA keeps the
-real credential as an in-memory `Authorization: Bearer` on the membership API.
-One browser session captures that (plus the request body and UA) into
-`profiles/kimi-web/token.json`, and the fetch afterwards is a single httpx POST
-to `kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats` (and
-`GetSubscription`) - no Playwright, no profile lock, sub-second polls.
+Kimi and DeepSeek have no official loopback token channel like Bailian, but each
+SPA keeps the real credential as an in-memory `Authorization: Bearer` on its own
+API (membership / usage).  One browser session captures it into
+`profiles/<type>/token.json`; with `auth = "token"` every fetch after that is
+plain httpx - no Playwright, no profile lock, sub-second polls.
 
 ```toml
 [[providers]]
-type  = "kimi-web"
-name  = "Kimi"
-auth  = "token"     # remove this line to fall back to the headless browser path
+type = "kimi-web"
+name = "Kimi"
+auth = "token"      # remove this line to fall back to the headless browser path
+
+[[providers]]
+type = "deepseek-web"
+name = "DeepSeek"
+auth = "token"
 ```
 
-```bash
-uv run python epd_monitor.py login --provider kimi-web   # re-capture after a 401
-```
+Two ways to supply the credential:
 
-A 401 clears the token and the card reports the re-login command instead of
-showing stale numbers.  Token lifetime is recorded as `captured_at` in the
-token file and is still being measured - verify the card for a few days before
-retiring the Playwright dependency for Kimi.
+- **automatic**: `uv run python epd_monitor.py login --provider kimi-web` (or
+  `deepseek-web`) - a headed window opens, you sign in, the token is saved and
+  the window closes;
+- **manual**: already signed in?  Copy the `Authorization` value from DevTools
+  (Network tab → the membership/usage request → Request Headers) and paste it:
+
+  ```bash
+  uv run python epd_monitor.py login --provider deepseek-web --token "Bearer sk-..."
+  ```
+
+  No browser is launched at all; a bare token without the `Bearer ` prefix is
+  accepted too.
+
+A 401 (or an empty store) is healed automatically: `auto_refresh` (default
+on) re-captures the credential headless from the existing browser profile and
+retries once - no interaction as long as the profile's own session is alive.
+Set `auto_refresh = false` to fail hard instead, and `refresh_timeout` (seconds)
+bounds each re-capture.  Only when the session itself is gone does the card
+report the login command instead of stale numbers.  Token lifetime is recorded
+as `captured_at`; Kimi's is short (observed under an hour, so the heal usually
+fires every cycle or two), DeepSeek's is still being measured - verify the cards
+for a few days before retiring the Playwright dependency.
 
 ### Bailian Token Plan without a browser
 
