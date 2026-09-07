@@ -81,6 +81,7 @@ _BUILTIN_MODULES = {
     "deepseek-web": "providers.webquota",
     "kimi-web": "providers.webquota",
     "aliyun-web": "providers.webquota",
+    "bailian": "providers.bailian",
 }
 
 

@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
-from datetime import datetime, timedelta, timezone, timezone
+import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -80,6 +83,188 @@ def test_aliyun_parsing() -> None:
     single, _ = parse_packages(
         {"Data": {"Instances": {"Instance": payload["Data"]["Instances"]["Instance"][0]}}}, "")
     check(len(single) == 1, "a single instance, which Aliyun returns unwrapped, still parses")
+
+
+def test_bailian_gateway() -> None:
+    print("bailian gateway")
+    from providers.bailian import (API_USAGE, build_form, build_params, gateway_for,
+                                   gateway_url)
+
+    check(gateway_for("cn-beijing", "domestic")
+          == ("bailian-cs.console.aliyun.com", "BroadScopeAspnGateway"),
+          "Beijing/domestic uses the aliyun.com host and the domestic action")
+    check(gateway_for("ap-southeast-1", "international")
+          == ("bailian-singapore-cs.alibabacloud.com", "IntlBroadScopeAspnGateway"),
+          "Singapore/international has its own host and the Intl action")
+    check(gateway_for("mars-1", "domestic") == gateway_for("cn-beijing", "domestic"),
+          "an unknown region falls back to Beijing, like the CLI does")
+
+    url = gateway_url("bailian-cs.console.aliyun.com", "BroadScopeAspnGateway",
+                      API_USAGE)
+    check(url == "https://bailian-cs.console.aliyun.com/cli/api.json"
+                 "?action=BroadScopeAspnGateway&product=sfm_bailian"
+                 "&api=zeldaHttp.apikeyMgr.%2Ftokenplan%2Fpersonal%2Fapi%2Fv2%2Fusage",
+          "the api name is percent-encoded into the query (a slash becomes %2F)")
+
+    form = build_form(API_USAGE, {}, "cn-beijing", 11253894)
+    check(sorted(form) == ["params", "region"] and form["region"] == "cn-beijing",
+          "the urlencoded body is params + region")
+    params = json.loads(form["params"])
+    check(params["Api"] == API_USAGE and params["V"] == "1.0",
+          "params names the API and the gateway version")
+    corner = params["Data"]["cornerstoneParam"]
+    sent = (corner["protocol"], corner["console"], corner["productCode"],
+            corner["switchUserType"], corner["consoleSite"])
+    check(sent == ("V2", "ONE_CONSOLE", "p_efm", 3, "BAILIAN_ALIYUN"),
+          "cornerstoneParam matches what bailian-cli sends")
+    check(corner["switchAgent"] == 11253894, "a delegated switch agent is passed on")
+    bare = json.loads(build_params(API_USAGE, {}, None))["Data"]["cornerstoneParam"]
+    check("switchAgent" not in bare, "without an agent uid the key is omitted")
+
+
+def test_bailian_parsing() -> None:
+    print("bailian parsing")
+    from providers.bailian import parse_token_plan, unwrap
+
+    # Captured 2026-09-07 through 'bl console call', gateway envelope intact.
+    usage_body = {
+        "code": "200",
+        "data": {"DataV2": {"ret": ["SUCCESS::接口调用成功"],
+                            "data": {"msg": "Success.", "code": "SUCCESS",
+                                     "success": True, "requestId": "4ea79581",
+                                     "data": {"per1WeekResetTime": 1789356540000,
+                                              "per1WeekPercentage": 0.0670188175}}},
+                 "success": True, "httpStatus": 200, "errorCode": "", "errorMsg": ""},
+        "httpStatusCode": "200", "successResponse": True}
+    usage = unwrap(usage_body, api="usage")
+    check(usage["per1WeekPercentage"] == 0.0670188175,
+          "unwrap walks data -> DataV2.data -> data")
+
+    sub_body = {"data": {"DataV2": {"data": {"success": True, "code": "SUCCESS",
+                                             "data": {"specCode": "pro",
+                                                      "remainingDays": 14,
+                                                      "status": "VALID"}}},
+                         "success": True, "errorCode": ""}}
+    check(unwrap(sub_body, api="subscription")["remainingDays"] == 14,
+          "the subscription payload keeps remainingDays")
+
+    items = parse_token_plan(usage, unwrap(sub_body, api="subscription"))
+    check(items[0].plan_name == "Aliyun TokenPlan" and items[0].unit == "%",
+          "the card is the one aliyun-web already draws")
+    check((items[0].quota_total, items[0].quota_used) == (100, 7),
+          "the bar is weekly usage: 6.70% used rounds to 7")
+    for part in ("rst 09-14 11:29", "14d"):
+        check(part in items[0].note, f"note carries {part!r}")
+
+    hourly = parse_token_plan({**usage, "per5HourPercentage": 0.42}, {})
+    check(hourly[0].extra == "5h 42%", "a 5-hour window rides the metrics line")
+    check(hourly[0].note == "rst 09-14 11:29", "no subscription -> no day count")
+
+    expired = "an expired console session points at the bl auth login hint"
+    try:
+        unwrap({"data": {"success": False, "errorCode": "NotLogined"}}, api="usage")
+    except ProviderError as exc:
+        check("bl auth login" in str(exc), expired)
+    else:
+        check(False, expired)
+
+    missing = "a payload without per1WeekPercentage errors instead of showing 0%"
+    try:
+        parse_token_plan({}, {})
+    except ProviderError:
+        check(True, missing)
+    else:
+        check(False, missing)
+
+def test_bailian_login_url() -> None:
+    print("bailian login url")
+    from providers.bailian import build_login_url, login_page, mask_token, new_state
+
+    check(login_page("domestic") == "https://bailian.console.aliyun.com",
+          "domestic signs in at bailian.console.aliyun.com")
+    check(login_page("international")
+          == "https://modelstudio.console.alibabacloud.com",
+          "international signs in at modelstudio.console.alibabacloud.com")
+    check(login_page("nonsense") == login_page("domestic"),
+          "an unknown site falls back to domestic")
+
+    url = build_login_url("https://bailian.console.aliyun.com", 51234, "ab12")
+    check(url == "https://bailian.console.aliyun.com/console-login"
+                 "?notice=127.0.0.1:51234?state=ab12",
+          "the callback address rides inside 'notice', with a second ? not &")
+    with_key = build_login_url("https://x", 1, "s", need_api_key=True)
+    check(with_key.endswith("&needapikey=true"),
+          "need_api_key appends the same flag the CLI appends")
+    check(len(new_state()) == 32 and new_state() != new_state(),
+          "state is 32 hex chars and never repeats")
+    check(mask_token("bb10abcd1234ef88e7") == "bb10...88e7",
+          "a token is masked the way bl auth status masks it")
+
+
+def test_bailian_callback_parsing() -> None:
+    print("bailian login callback")
+    from providers.bailian import parse_callback
+
+    got = parse_callback("state=abc&access_token=tok123&console_site=domestic", "", "")
+    check(got == {"access_token": "tok123", "console_site": "domestic"},
+          "GET query credentials are normalised to snake_case")
+
+    form = parse_callback("", "accessToken=tok1&consoleSwitchAgent=42&workspaceId=ws",
+                          "application/x-www-form-urlencoded")
+    check(form == {"access_token": "tok1", "console_switch_agent": 42,
+                   "workspace_id": "ws"},
+          "camelCase form bodies work and the agent uid becomes an int")
+
+    body = parse_callback("", '{"access_token":"tok2","console_region":"cn-beijing"}',
+                          "application/json")
+    check(body == {"access_token": "tok2", "console_region": "cn-beijing"},
+          "a JSON body is read as well")
+
+    check(parse_callback("state=x", "", "") == {},
+          "a callback carrying no credentials yields nothing to store")
+    bad = parse_callback("", "console_switch_agent=not-a-number",
+                         "application/x-www-form-urlencoded")
+    check("console_switch_agent" not in bad,
+          "an unusable agent uid is dropped, not stored as a string")
+
+
+def test_bailian_store() -> None:
+    print("bailian credential store")
+    from providers.bailian import (load_credentials, resolve_credentials,
+                                   save_credentials)
+
+    held = os.environ.pop("BAILIAN_ACCESS_TOKEN", None)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "bailian" / "console.json"
+            check(load_credentials(store) == {}, "a missing store reads as empty")
+
+            save_credentials({"access_token": "tok", "console_site": "domestic",
+                              "junk": "dropped"}, store)
+            check(load_credentials(store) == {"access_token": "tok",
+                                              "console_site": "domestic"},
+                  "only known credential fields are persisted")
+
+            cred, source = resolve_credentials({"store": str(store)})
+            check(cred["access_token"] == "tok" and source.startswith("store:"),
+                  "the own store wins over the bl config file")
+
+            inline, label = resolve_credentials({"access_token": "cfg-token",
+                                                 "store": str(store)})
+            check(inline["access_token"] == "cfg-token" and label == "config",
+                  "an explicit access_token beats the store")
+
+            gone = "with no token anywhere the error names both login routes"
+            try:
+                resolve_credentials({"store": str(Path(tmp) / "nope.json"),
+                                     "cli_config": str(Path(tmp) / "none.json")})
+            except ProviderError as exc:
+                check("login --provider bailian" in str(exc), gone)
+            else:
+                check(False, gone)
+    finally:
+        if held is not None:
+            os.environ["BAILIAN_ACCESS_TOKEN"] = held
 
 
 def test_registry() -> None:
@@ -185,7 +370,9 @@ def test_webquota_parsers() -> None:
 
 def main() -> int:
     for test in (test_aliyun_signing, test_aliyun_parsing, test_webquota_parsers,
-                 test_registry):
+                 test_bailian_gateway, test_bailian_parsing,
+                 test_bailian_login_url, test_bailian_callback_parsing,
+                 test_bailian_store, test_registry):
         test()
     print("\nall checks passed")
     return 0

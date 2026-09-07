@@ -197,8 +197,11 @@ def main() -> int:
                         help="pattern row-marker: which row to draw (0-299)")
     parser.add_argument("--fraction", type=float, default=0.5,
                         help="fault: how much of the plane to send before ENDing early")
-    parser.add_argument("--provider", choices=["deepseek-web", "kimi-web", "aliyun-web"],
-                        help="login: which web provider to sign in")
+    parser.add_argument("--provider",
+                        choices=["deepseek-web", "kimi-web", "aliyun-web", "bailian"],
+                        help="login: which provider to sign in")
+    parser.add_argument("--no-browser", action="store_true",
+                        help="login: print the sign-in URL instead of opening one")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
@@ -259,14 +262,24 @@ def main() -> int:
 
             return asyncio.run(fault_test(cfg, fraction=args.fraction))
         elif args.command == "login":
-            from providers.webquota import RECIPES, open_login
-
             if not args.provider:
-                print(f"login needs --provider, one of: {sorted(RECIPES)}", file=sys.stderr)
+                from providers.webquota import RECIPES
+
+                known = sorted([*RECIPES, "bailian"])
+                print(f"login needs --provider, one of: {known}", file=sys.stderr)
                 return 1
             own = next((p for p in cfg.get("providers", [])
                         if p.get("type") == args.provider), {})
-            open_login(args.provider, headless=bool(own.get("headless", True)))
+            if args.provider == "bailian":
+                # No browser profile to keep alive: the console posts the token
+                # back to a local port, the way `bl auth login --console` does.
+                from providers.bailian import login_from_config
+
+                login_from_config(own, open_browser=not args.no_browser)
+            else:
+                from providers.webquota import open_login
+
+                open_login(args.provider, headless=bool(own.get("headless", True)))
     except KeyboardInterrupt:
         print("\nInterrupted.")
     except RuntimeError as exc:

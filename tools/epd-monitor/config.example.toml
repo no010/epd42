@@ -72,6 +72,7 @@ api_key = "..."        # API key from open.bigmodel.cn
 #   uv run python epd_monitor.py login --provider deepseek-web   # 余额 + 累计消费
 #   uv run python epd_monitor.py login --provider kimi-web       # 会员套餐额度 + 到期日
 #   uv run python epd_monitor.py login --provider aliyun-web     # Token Plan 周额度 + 剩余天数
+#                                          (or use the browser-free `bailian` provider above)
 #
 # Profiles live in tools/epd-monitor/profiles/ (gitignored: they hold session
 # cookies). Options per provider: headless = false (escape hatch: some consoles,
@@ -80,6 +81,31 @@ api_key = "..."        # API key from open.bigmodel.cn
 [[providers]]
 type = "deepseek-web"
 name = "DeepSeek"
+
+# ─── Aliyun Bailian Token Plan (console gateway: no browser, no CLI needed) ────
+# The same numbers the console page shows, fetched with a console access token -
+# no Playwright, no off-screen window, no anti-bot gamble.  One-time sign-in:
+#
+#   uv run python epd_monitor.py login --provider bailian
+#
+# That opens your own browser at the console login page and receives the token on
+# a loopback port, exactly like `bl auth login --console` does; it is stored in
+# profiles/bailian/console.json (gitignored).  If you already use the Bailian CLI,
+# its `bl auth login --console --console-site domestic` token is picked up as-is.
+# Supersedes `aliyun-web` below.
+[[providers]]
+type = "bailian"
+name = "Aliyun"
+# mode           = "http"         # "http" (default, no Node) | "cli" (shells out to bl)
+# store          = ""             # token file; default profiles/bailian/console.json
+# access_token   = ""             # skip the store entirely (or BAILIAN_ACCESS_TOKEN)
+# console_site   = "domestic"     # domestic | international; defaults to the token's
+# console_region = "cn-beijing"   # gateway region; defaults to the token's
+# timeout        = 20
+# -- mode = "cli" only --
+# bl_path        = "bl"           # override if bl is not on PATH
+# profile        = ""             # bl --config <name>
+# cli_config     = ""             # where bl keeps its config (default ~/.bailian)
 
 # ─── Aliyun resource packages (阿里云百炼 Token Plan / 资源包) ──────────────
 # Queries BSS OpenAPI QueryResourcePackageInstances, so it needs an AccessKey

@@ -52,6 +52,7 @@ uv run python epd_monitor.py daemon
 | `pattern`  | Stream a synthetic test image (`white`, `black`, `corner-dots`, `row-marker`, `left-half`, `grid`) |
 | `setdriver`| Point the device at the panel actually attached (`--driver 1|2|3`) |
 | `fault`    | Send half a plane and END early: the device must refuse it, then recover |
+| `login`    | Sign in a provider: `deepseek-web`/`kimi-web`/`aliyun-web` keep a browser profile, `bailian` only needs one loopback callback |
 
 Bring-up order on fresh hardware: `scan` → `describe` → `setdriver` →
 `pattern --name white` → `pattern --name corner-dots` →
@@ -147,6 +148,54 @@ updates, where a single row can be resent on its own.
 | `zhipu`    | Zhipu AI (智谱)    | Token quota %, request count |
 | `openai`   | OpenAI / ChatGPT  | USD monthly spend (requires Admin key) |
 | `generic`  | Any REST API      | Configured via `balance_field` / `quota_*_field` |
+| `bailian`  | Aliyun Bailian Token Plan | Weekly usage %, reset time, plan days left |
+| `aliyun`   | Aliyun resource packages (BSS OpenAPI) | Package total/remaining tokens |
+| `deepseek-web`, `kimi-web`, `aliyun-web` | Web-session scraping (Playwright + local Edge) | The console's own numbers, no API keys |
+
+### Bailian Token Plan without a browser
+
+`type = "bailian"` reads the Token Plan card through the same console gateway the
+`bl` CLI (bailian-cli) uses, so it needs no Playwright and no off-screen Edge window:
+
+```
+POST https://bailian-cs.console.aliyun.com/cli/api.json?action=BroadScopeAspnGateway&product=sfm_bailian&api=<api>
+Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer <console access_token - see "Signing in" below>
+
+params={"Api":"<api>","V":"1.0","Data":{"cornerstoneParam":{...}}}&region=cn-beijing
+```
+
+Two calls give the card: `.../tokenplan/personal/api/v2/usage` (weekly and 5-hour
+usage share plus reset time) and `.../tokenplan/personal/api/v2/subscription`
+(`remainingDays`). Both answer inside the envelope `data.DataV2.data.data` — the very
+payload `aliyun-web` scrapes out of the page — so the rendered card is unchanged.
+
+#### Signing in (no CLI, no browser profile)
+
+```bash
+uv run python epd_monitor.py login --provider bailian   # native; needs no Node/bl
+uv run python epd_monitor.py login --provider bailian --no-browser   # just print the URL
+```
+
+That runs the same handshake `bl auth login --console` does, in-process: bind a random
+`127.0.0.1` port, open `<console>/console-login?notice=127.0.0.1:<port>?state=<32-hex>`
+in your own browser, and let the console post `access_token` (plus `console_site`,
+`console_region`, `console_switch_agent`, `workspace_id`) back to that port. There is no
+OAuth client and no client secret anywhere — your browser session *is* the credential,
+and the `state` check plus the loopback-only bind are what keep the callback honest.
+It lands in `profiles/bailian/console.json` (gitignored, mode 0600 best-effort).
+
+If you already use the CLI, `bl auth login --console --console-site domestic` works too.
+Token lookup order: `access_token` in the provider config (or `BAILIAN_ACCESS_TOKEN`) →
+`profiles/bailian/console.json` → the file `bl` writes (`~/.bailian/config.json`, or
+`$BAILIAN_CONFIG_DIR`), so an existing CLI login is picked up untouched.
+
+When the token expires the gateway answers `NotLogined` and the provider says so —
+repeat the login. (`bl` can only self-refresh when an OpenAPI AK/SK pair is stored as
+well; this provider never needs that.) `mode = "cli"` shells out to `bl console call`
+instead, which avoids reading any token file at the cost of a Node startup. Any other
+gateway API works the same way — `bl console call --api <name> --data '{}'` is the
+reference, and `bl <cmd> --verbose` prints the exact request to copy.
 
 ### OpenAI Note
 

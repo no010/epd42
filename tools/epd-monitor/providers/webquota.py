@@ -23,7 +23,6 @@ resident instead (configure it with headless = false).
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
 import sys
 import time
