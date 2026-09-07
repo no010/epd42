@@ -82,6 +82,19 @@ api_key = "..."        # API key from open.bigmodel.cn
 type = "deepseek-web"
 name = "DeepSeek"
 
+
+# Kimi token-mode pilot: the login additionally saves the SPA's in-memory
+# Bearer credential to profiles/kimi-web/token.json (gitignored), and with
+# auth = "token" every fetch becomes a plain httpx POST - no browser is
+# launched per poll.  Re-capture / re-login when a 401 clears the token:
+#   uv run python epd_monitor.py login --provider kimi-web
+# Drop the `auth` line to fall back to the headless Playwright path.
+# Token lifetime is still being measured (recorded as captured_at in the
+# token file); until it is proven stable, keep an eye on the card.
+[[providers]]
+type = "kimi-web"
+name = "Kimi"
+auth = "token"             # pilot: httpx-only fetches; remove for the browser path
 # ─── Aliyun Bailian Token Plan (console gateway: no browser, no CLI needed) ────
 # The same numbers the console page shows, fetched with a console access token -
 # no Playwright, no off-screen window, no anti-bot gamble.  One-time sign-in:

@@ -152,6 +152,31 @@ updates, where a single row can be resent on its own.
 | `aliyun`   | Aliyun resource packages (BSS OpenAPI) | Package total/remaining tokens |
 | `deepseek-web`, `kimi-web`, `aliyun-web` | Web-session scraping (Playwright + local Edge) | The console's own numbers, no API keys |
 
+### Kimi token-mode pilot (`auth = "token"`)
+
+Kimi has no official loopback token channel like Bailian, but its SPA keeps the
+real credential as an in-memory `Authorization: Bearer` on the membership API.
+One browser session captures that (plus the request body and UA) into
+`profiles/kimi-web/token.json`, and the fetch afterwards is a single httpx POST
+to `kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats` (and
+`GetSubscription`) - no Playwright, no profile lock, sub-second polls.
+
+```toml
+[[providers]]
+type  = "kimi-web"
+name  = "Kimi"
+auth  = "token"     # remove this line to fall back to the headless browser path
+```
+
+```bash
+uv run python epd_monitor.py login --provider kimi-web   # re-capture after a 401
+```
+
+A 401 clears the token and the card reports the re-login command instead of
+showing stale numbers.  Token lifetime is recorded as `captured_at` in the
+token file and is still being measured - verify the card for a few days before
+retiring the Playwright dependency for Kimi.
+
 ### Bailian Token Plan without a browser
 
 `type = "bailian"` reads the Token Plan card through the same console gateway the

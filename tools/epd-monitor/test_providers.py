@@ -5,10 +5,13 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
 import tempfile
+
+import httpx
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -267,6 +270,82 @@ def test_bailian_store() -> None:
             os.environ["BAILIAN_ACCESS_TOKEN"] = held
 
 
+
+def test_kimi_token() -> None:
+    print("kimi token mode")
+    from providers.webquota import (_drop_token, _load_token, _mask_secret,
+                                    _save_token, _token_fetch, _token_store)
+
+    stats_body = {"ratelimitCode5h": {"ratio": 0.0681, "enabled": True,
+                                      "resetTime": "2026-09-01T10:22:33Z"},
+                  "ratelimitCode7d": {"ratio": 0.3922, "enabled": True,
+                                      "resetTime": "2026-09-05T01:22:33Z"},
+                  "subscriptionBalance": {"feature": "FEATURE_OMNI",
+                                          "amountUsedRatio": 0.277,
+                                          "expireTime":
+                                              "2026-09-25T01:22:33.648851Z"}}
+    sub_body = {"subscription": {"goods": {"title": "Allegretto"}},
+                "balances": [{"feature": "FEATURE_OMNI",
+                              "amountUsedRatio": 0.2743,
+                              "expireTime": "2026-09-25T01:22:33.648851Z"}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("GetSubscriptionStats"):
+            return httpx.Response(200, json=stats_body)
+        if request.url.path.endswith("GetSubscription"):
+            return httpx.Response(200, json=sub_body)
+        return httpx.Response(404, json={})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        check(_load_token("kimi-web", root) == {},
+              "a missing token store reads as empty")
+
+        saved = {"authorization": "Bearer fake-token-12345", "junk": "x",
+                 "cookie": "kimi_token=abc", "user_agent": "UA",
+                 "captured_at": "2026-09-07T10:00:00+08:00"}
+        _save_token("kimi-web", saved, root)
+        restored = _load_token("kimi-web", root)
+        check("junk" not in restored and restored["authorization"]
+              == "Bearer fake-token-12345",
+              "only the whitelisted credential fields are persisted")
+        check(_mask_secret("Bearer fake-token-12345").endswith("2345"),
+              "tokens print masked, never in full")
+
+        transport = httpx.MockTransport(handler)
+        items = asyncio.run(_token_fetch("kimi-web", {"timeout": 5},
+                                         root=root, transport=transport))
+        check(items[0].plan_name == "Kimi Allegretto",
+              "the httpx path produces the same card as the browser path")
+        check(items[0].quota_used == 7, "the bar reads the 5h window (6.8%)")
+        for part in ("Mo 27%", "Wk 39%", "7d rst 09-05", "exp 09-25"):
+            check(part in items[0].note, f"note carries {part!r}")
+        check(items[0].extra == "rst 18:22", "the 5h reset rides the metrics line")
+
+        def expired(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={})
+
+        gone = "a 401 clears the stored token and names the re-login command"
+        try:
+            asyncio.run(_token_fetch("kimi-web", {"timeout": 5}, root=root,
+                                     transport=httpx.MockTransport(expired)))
+        except ProviderError as exc:
+            check("login --provider kimi-web" in str(exc), gone)
+        else:
+            check(False, gone)
+        check(not _token_store("kimi-web", root).exists(),
+              "the expired token file is removed after a 401")
+        _drop_token("kimi-web", root)
+
+    try:
+        asyncio.run(_token_fetch("deepseek-web", {}))
+    except ProviderError as exc:
+        check("kimi-web only" in str(exc),
+              "token mode refuses providers it is not wired for (pilot)")
+    else:
+        check(False, "token mode refuses providers it is not wired for (pilot)")
+
+
 def test_registry() -> None:
     print("registry")
     for provider_type, cls_name in (("kimi", "KimiProvider"), ("deepseek", "DeepSeekProvider"),
@@ -372,7 +451,7 @@ def main() -> int:
     for test in (test_aliyun_signing, test_aliyun_parsing, test_webquota_parsers,
                  test_bailian_gateway, test_bailian_parsing,
                  test_bailian_login_url, test_bailian_callback_parsing,
-                 test_bailian_store, test_registry):
+                 test_bailian_store, test_kimi_token, test_registry):
         test()
     print("\nall checks passed")
     return 0

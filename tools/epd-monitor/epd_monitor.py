@@ -276,6 +276,12 @@ def main() -> int:
                 from providers.bailian import login_from_config
 
                 login_from_config(own, open_browser=not args.no_browser)
+            elif str(own.get("auth", "")).strip().lower() == "token":
+                # Capture the SPA's in-memory credential so later fetches can
+                # run as pure httpx (pilot: kimi-web).
+                from providers.webquota import token_capture_login
+
+                token_capture_login(args.provider)
             else:
                 from providers.webquota import open_login
 

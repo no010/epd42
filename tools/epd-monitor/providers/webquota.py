@@ -23,6 +23,8 @@ resident instead (configure it with headless = false).
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import subprocess
 import sys
 import time
@@ -32,6 +34,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from playwright.sync_api import sync_playwright
 
@@ -655,8 +659,12 @@ class _WebProviderBase(ProviderBase):
         recipe = self.recipe
         name = self.provider_type
         profile = _profile_dir(name)
-        headless = bool(self._cfg.get("headless", True))
         wait_s = float(self._cfg.get("wait_seconds", DEFAULT_WAIT_S))
+        if str(self._cfg.get("auth", "")).strip().lower() == "token":
+            # Pilot: one browser login captures the SPA's in-memory Bearer
+            # token (+ cookies); every fetch after that is plain httpx.
+            return await _token_fetch(name, self._cfg)
+        headless = bool(self._cfg.get("headless", True))
         if headless:
             return await _pw_run(_capture_and_parse, recipe, profile, wait_s)
         return await _pw_run(_cdp_fetch, recipe, name, wait_s)
@@ -676,3 +684,267 @@ def _make(name: str) -> type[ProviderBase]:
 
 for _type in RECIPES:
     _make(_type)
+
+# ----------------------------------------------------------------------
+# Kimi token mode (pilot)
+# ----------------------------------------------------------------------
+# The SPA keeps its real credential in the JS realm as an in-memory
+# ``Authorization: Bearer`` header on every membership call.  One browser
+# session captures that header (plus the request cookies and the UA), and
+# ``auth = "token"`` then fetches the exact same endpoints with httpx - no
+# Playwright, no profile lock, sub-second polls.  The playwright path stays
+# the default until token lifetime is proven; ``auth = "token"`` opts in.
+KIMI_ORIGIN = "https://www.kimi.com"
+KIMI_MEMBERSHIP_API = (KIMI_ORIGIN
+                       + "/apiv2/kimi.gateway.membership.v2.MembershipService")
+KIMI_STATS_URL = KIMI_MEMBERSHIP_API + "/GetSubscriptionStats"
+KIMI_SUBSCRIPTION_URL = KIMI_MEMBERSHIP_API + "/GetSubscription"
+
+_TOKEN_FIELDS = ("authorization", "cookie", "user_agent",
+                 "get_subscription_body", "captured_at")
+
+
+def _token_store(name: str, root: Path | None = None) -> Path:
+    """Where the captured header set lives; under profiles/ so it is gitignored."""
+    return (root or PROFILE_ROOT) / name / "token.json"
+
+
+def _mask_secret(value: str) -> str:
+    """Show enough to tell tokens apart, never enough to use one."""
+    if not value:
+        return ""
+    if len(value) <= 18:
+        return "***"
+    return f"{value[:12]}...{value[-4:]}"
+
+
+def _save_token(name: str, data: dict[str, Any],
+                root: Path | None = None) -> Path:
+    path = _token_store(name, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kept = {k: data[k] for k in _TOKEN_FIELDS if k in data and data[k]}
+    path.write_text(json.dumps(kept, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _load_token(name: str, root: Path | None = None) -> dict[str, str]:
+    path = _token_store(name, root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float))}
+
+
+def _drop_token(name: str, root: Path | None = None) -> None:
+    path = _token_store(name, root)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _capture_membership_headers(provider_type: str, recipe: Recipe,
+                                page, auth: dict[str, str],
+                                subscription_bodies: list[str],
+                                capped_s: float) -> None:
+    """Wait for the SPA's Bearer header (bounded), then for parseable data.
+
+    ``capped_s`` bounds the header wait only; the caller owns the overall
+    sign-in timeout.  Data may still be racing the bundle boot, so the caller
+    keeps polling until ``recipe.parse`` accepts the captures.
+    """
+    deadline = time.monotonic() + capped_s
+    while "authorization" not in auth and time.monotonic() < deadline:
+        page.wait_for_timeout(250)
+    if provider_type == "kimi-web" and subscription_bodies:
+        auth.setdefault("get_subscription_body", subscription_bodies[-1])
+
+
+def token_capture_login(provider_type: str, timeout_s: float = 540.0,
+                        *, headed: bool = True) -> bool:
+    """Headed sign-in that also persists the SPA credential for token mode.
+
+    Like ``_login`` but additionally records the in-memory ``Authorization``
+    header, the request cookies and the UA on the membership API, then saves
+    them to ``profiles/<type>/token.json`` (gitignored, 0600 best-effort).
+    Return True when a token was stored.  With ``headed=False`` the existing
+    profile is reused headless, for re-capturing a still-live session.
+    """
+    recipe = RECIPES.get(provider_type)
+    if recipe is None:
+        raise ProviderError(f"unknown web provider '{provider_type}'; "
+                            f"known: {sorted(RECIPES)}")
+    if provider_type != "kimi-web":
+        raise ProviderError(
+            f"[{provider_type}] token capture is wired for kimi-web only "
+            "(pilot) - keep using the playwright path for now")
+    profile = _profile_dir(provider_type)
+    captured: dict[str, list[dict[str, Any]]] = {}
+    auth: dict[str, str] = {}
+    subscription_bodies: list[str] = []
+
+    def on_response(resp) -> None:
+        for fragment in recipe.expect:
+            if fragment in resp.url:
+                try:
+                    captured.setdefault(fragment, []).append(resp.json())
+                except Exception:
+                    pass
+
+    def on_request(req) -> None:
+        headers = req.headers
+        # Only trust credentials observed on the membership endpoints the card
+        # parses - the page fires other requests with different, shorter-lived
+        # tokens, and saving the first one found turns into a stale 401.
+        if any(fragment in req.url for fragment in recipe.expect):
+            if "authorization" in headers:
+                auth.setdefault("authorization", headers["authorization"])
+            cookie = headers.get("cookie")
+            if cookie and "cookie" not in auth:
+                auth["cookie"] = cookie
+            if ("GetSubscription" in req.url and "Stats" not in req.url
+                    and req.method == "POST" and req.post_data):
+                subscription_bodies.append(req.post_data)
+
+    print(f"Opening {recipe.start_url}")
+    if headed:
+        print(f"-> {recipe.login_hint}  (token capture mode)")
+        print(f"(完成登录后窗口自动关闭，最长等 {timeout_s:.0f}s)")
+    else:
+        print("-> reusing the existing logged-in profile (headless, no login)")
+    pw = sync_playwright().start()
+    context = pw.chromium.launch_persistent_context(
+        str(profile), channel=DEFAULT_CHANNEL, headless=not headed,
+        viewport={"width": 1440, "height": 900})
+    page = context.new_page()
+    page.on("response", on_response)
+    page.on("request", on_request)
+    user_agent = ""
+    try:
+        page.goto(recipe.start_url, wait_until="domcontentloaded")
+        _capture_membership_headers(provider_type, recipe, page, auth,
+                                    subscription_bodies, capped_s=8.0)
+        remaining = timeout_s
+        while remaining > 0:
+            page.wait_for_timeout(500)
+            remaining -= 0.5
+            if "authorization" not in auth:
+                continue
+            try:
+                recipe.parse(captured)
+                break
+            except ProviderError:
+                continue
+        try:
+            user_agent = page.evaluate("navigator.userAgent")
+        except Exception:
+            user_agent = ""
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+        context.close()
+        pw.stop()
+
+    token = auth.get("authorization") or auth.get("cookie", "")
+    if not token or not auth.get("authorization"):
+        print(f"[{provider_type}] no Authorization header seen - not signed in? "
+              "Run login again with headed login", file=sys.stderr)
+        return False
+    body = subscription_bodies[-1] if subscription_bodies else ""
+    auth["user_agent"] = user_agent
+    auth["get_subscription_body"] = body
+    auth["captured_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    path = _save_token(provider_type, auth)
+    print(f"[{provider_type}] token saved to {path} "
+          f"(auth {_mask_secret(auth['authorization'])}, "
+          f"cookie {_mask_secret(auth.get('cookie', ''))}, "
+          f"sub_body {len(body)} bytes)")
+    return True
+
+
+async def _kimi_post(client: httpx.AsyncClient, url: str,
+                     body: str) -> tuple[int, dict[str, Any] | None]:
+    """POST one membership endpoint; (status, parsed dict) - never raises on
+    an HTTP-level refusal so the caller can tell 401 from other failures."""
+    try:
+        resp = await client.post(url, content=body)
+    except httpx.HTTPError as exc:
+        raise ProviderError(f"[kimi-web] {url.rsplit('/', 1)[-1]} request "
+                            f"failed: {exc}") from exc
+    if resp.status_code != 200:
+        return resp.status_code, None
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.status_code, {}
+    return resp.status_code, data if isinstance(data, dict) else {}
+
+
+async def _token_fetch(name: str, cfg: dict[str, Any], *,
+                       root: Path | None = None,
+                       transport: httpx.AsyncBaseTransport | None = None,
+                       ) -> list[SubscriptionItem]:
+    """Fetch the card with pure httpx using the captured credential.
+
+    Opt in with ``auth = "token"`` in the provider config.  On a 401 the
+    saved token is dropped and the card reports the re-login command - the
+    panel never shows stale numbers.
+    """
+    if name != "kimi-web":
+        raise ProviderError(
+            f"[{name}] token mode is wired for kimi-web only (pilot)")
+    recipe = RECIPES[name]
+    token = _load_token(name, root)
+    authorization = token.get("authorization", "")
+    if not authorization:
+        raise ProviderError(
+            f"[{name}] no saved token - run "
+            "'python epd_monitor.py login --provider kimi-web' once "
+            "(headed; it captures the SPA credential for auth=token mode)")
+    timeout = float(cfg.get("timeout", 20) or 20)
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": KIMI_ORIGIN,
+        "Referer": KIMI_ORIGIN + "/",
+        "Authorization": authorization,
+        "User-Agent": (token.get("user_agent")
+                       or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/126.0.0.0 Safari/537.36"),
+    }
+    cookie = token.get("cookie", "")
+    if cookie:
+        headers["Cookie"] = cookie
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers,
+                                 transport=transport) as client:
+        status, stats = await _kimi_post(client, KIMI_STATS_URL, "{}")
+        if stats is None:
+            if status == 401:
+                _drop_token(name, root)
+                raise ProviderError(
+                    f"[{name}] the saved token expired (HTTP 401) - token "
+                    "cleared, run 'python epd_monitor.py login "
+                    "--provider kimi-web' again")
+            raise ProviderError(f"[{name}] GetSubscriptionStats HTTP {status}")
+        # The title/credits live in GetSubscription; a wrong body just loses
+        # the title - the stats response carries subscriptionBalance on the
+        # quota tab (2026-09-01 captures), so the bar still renders.
+        sub = stats
+        if status == 200:
+            _, sub = await _kimi_post(client, KIMI_SUBSCRIPTION_URL,
+                                      token.get("get_subscription_body") or "{}")
+            if not isinstance(sub, dict) or not sub:
+                sub = stats
+
+    bodies: dict[str, Any] = {KIMI_STATS_FRAGMENT: [stats],
+                              KIMI_SUBSCRIPTION_FRAGMENT: [sub]}
+    return recipe.parse(bodies)
