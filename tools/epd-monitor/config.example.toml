@@ -100,8 +100,9 @@ type = "kimi-web"
 #   uv run python epd_monitor.py login --provider kimi-web      # headed sign-in
 #   uv run python epd_monitor.py login --provider deepseek-web --token "Bearer sk-..."
 #                                                              # or paste from DevTools
-# A 401 auto-heals (default): the credential is re-captured headless from the
-# live profile and the fetch retried; set auto_refresh = false to fail hard.
+# A 401 auto-heals (default): kimi first rotates via its official httpx refresh
+# endpoint (needs a captured refresh_token), then falls back to a headless
+# re-capture from the live profile; set auto_refresh = false to fail hard.
 # Token lifetime
 # is still being measured (recorded as captured_at); keep an eye on the cards.
 [[providers]]

@@ -23,6 +23,7 @@ resident instead (configure it with headless = false).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import subprocess
@@ -698,11 +699,12 @@ KIMI_ORIGIN = "https://www.kimi.com"
 KIMI_MEMBERSHIP_API = (KIMI_ORIGIN
                        + "/apiv2/kimi.gateway.membership.v2.MembershipService")
 KIMI_STATS_URL = KIMI_MEMBERSHIP_API + "/GetSubscriptionStats"
+KIMI_REFRESH_URL = "https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken"
 _TOKEN_PROVIDERS = ("kimi-web", "deepseek-web")
 
 KIMI_SUBSCRIPTION_URL = KIMI_MEMBERSHIP_API + "/GetSubscription"
 
-_TOKEN_FIELDS = ("authorization", "cookie", "user_agent",
+_TOKEN_FIELDS = ("authorization", "refresh_token", "cookie", "user_agent",
                  "get_subscription_body", "captured_at")
 
 
@@ -769,6 +771,7 @@ def _capture_membership_headers(provider_type: str, recipe: Recipe,
 
 def token_capture_login(provider_type: str, timeout_s: float = 540.0,
                         *, headed: bool = True, token: str | None = None,
+                        refresh_token: str | None = None,
                         root: Path | None = None) -> bool:
     """Persist the SPA credential so ``auth = "token"`` can fetch via httpx.
 
@@ -797,12 +800,15 @@ def token_capture_login(provider_type: str, timeout_s: float = 540.0,
         token = token.strip()
         if not token.lower().startswith("bearer "):
             token = f"Bearer {token}"
-        path = _save_token(provider_type,
-                           {"authorization": token,
-                            "captured_at": datetime.now().astimezone()
-                            .isoformat(timespec="seconds")}, root=root)
+        data = {"authorization": token,
+                "captured_at": datetime.now().astimezone()
+                .isoformat(timespec="seconds")}
+        if refresh_token:
+            data["refresh_token"] = refresh_token.strip()
+        path = _save_token(provider_type, data, root=root)
         print(f"[{provider_type}] token saved from the clipboard/devtools to "
-              f"{path} (auth {_mask_secret(token)})")
+              f"{path} (auth {_mask_secret(token)}"
+              f"{', refresh_token' if 'refresh_token' in data else ''})")
         return True
     profile = _profile_dir(provider_type)
     captured: dict[str, list[dict[str, Any]]] = {}
@@ -865,6 +871,15 @@ def token_capture_login(provider_type: str, timeout_s: float = 540.0,
             user_agent = page.evaluate("navigator.userAgent")
         except Exception:
             user_agent = ""
+        if provider_type == "kimi-web" and "refresh_token" not in auth:
+            # The long-lived pair the SPA keeps in localStorage; lets httpx
+            # rotate the access token without any browser afterwards.
+            try:
+                rt = page.evaluate("localStorage.getItem('refresh_token')")
+            except Exception:
+                rt = None
+            if rt:
+                auth["refresh_token"] = str(rt)
     finally:
         try:
             page.close()
@@ -927,6 +942,68 @@ def _no_token_error(name: str) -> ProviderError:
         "(headed, or paste the Authorization header with --token)")
 
 
+def _jwt_ttl_remaining(header_value: str) -> int | None:
+    """Seconds until a Bearer access JWT expires; None when undecodable."""
+    token = header_value.removeprefix("Bearer ").strip()
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        seg = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(seg))
+        exp = int(claims["exp"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    return exp - int(time.time())
+
+
+async def _kimi_refresh(name: str, cfg: dict[str, Any], token: dict[str, str],
+                        *, root: Path | None,
+                        transport: httpx.AsyncBaseTransport | None) -> bool:
+    """Rotate Kimi's access token via the official refresh endpoint.
+
+    Proven 2026-09-07: ``POST {"refreshToken":..}`` to auth.kimi.com
+    RefreshToken returns a fresh HS512 pair - access TTL 900 s, refresh token
+    rotates on every call.  The new pair is persisted; nothing else needed.
+    """
+    refresh_token = token.get("refresh_token", "")
+    if not refresh_token:
+        return False
+    timeout = float(cfg.get("timeout", 20) or 20)
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": KIMI_ORIGIN,
+        "Referer": KIMI_ORIGIN + "/settings/subscription?tab=quota",
+        "User-Agent": token.get("user_agent") or _DEFAULT_UA,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout,
+                                     transport=transport) as client:
+            resp = await client.post(KIMI_REFRESH_URL,
+                                     json={"refreshToken": refresh_token},
+                                     headers=headers)
+    except httpx.HTTPError:
+        return False                      # transient: caller falls back
+    if resp.status_code != 200:
+        return False
+    try:
+        data = resp.json()
+    except ValueError:
+        return False
+    nt = data.get("accessToken") or data.get("access_token")
+    nr = data.get("refreshToken") or data.get("refresh_token")
+    if not nt or not nr:
+        return False
+    _save_token(name,
+                {**token,
+                 "authorization": f"Bearer {nt}",
+                 "refresh_token": nr,
+                 "captured_at": datetime.now().astimezone()
+                 .isoformat(timespec="seconds")}, root=root)
+    return True
+
+
 async def _replay_credential(name: str, cfg: dict[str, Any],
                              root: Path | None) -> bool:
     """One headless re-capture from the still-live browser profile.
@@ -965,11 +1042,18 @@ async def _token_fetch(name: str, cfg: dict[str, Any], *,
         if not auto:
             _drop_token(name, root)
             raise _expired_error(name) from None
-        if not await _replay_credential(name, cfg, root):
+        refreshed = False
+        token = _load_token(name, root)
+        if name == "kimi-web" and token.get("refresh_token"):
+            refreshed = await _kimi_refresh(name, cfg, token, root=root,
+                                            transport=transport)
+        if not refreshed:
+            refreshed = await _replay_credential(name, cfg, root)
+        if not refreshed:
             _drop_token(name, root)
             raise ProviderError(
-                f"[{name}] the saved token expired and the browser session "
-                "cannot be replayed - run "
+                f"[{name}] the saved token expired and neither refresh nor "
+                "the browser session helped - run "
                 f"'python epd_monitor.py login --provider {name}' once "
                 "(headed)") from None
         try:
@@ -987,13 +1071,18 @@ async def _token_fetch_once(name: str, cfg: dict[str, Any], *,
     token = _load_token(name, root)
     if not token.get("authorization", ""):
         if bool(cfg.get("auto_refresh", True)):
-            if not await _replay_credential(name, cfg, root):
-                raise ProviderError(
-                    f"[{name}] no saved token and the browser session cannot "
-                    "be replayed - run "
-                    f"'python epd_monitor.py login --provider {name}' once "
-                    "(headed)") from None
-            token = _load_token(name, root)
+            if name == "kimi-web" and token.get("refresh_token"):
+                await _kimi_refresh(name, cfg, token, root=root,
+                                    transport=transport)
+                token = _load_token(name, root)
+            if not token.get("authorization", ""):
+                if not await _replay_credential(name, cfg, root):
+                    raise ProviderError(
+                        f"[{name}] no saved token and the browser session "
+                        "cannot be replayed - run "
+                        f"'python epd_monitor.py login --provider {name}' once "
+                        "(headed)") from None
+                token = _load_token(name, root)
         if not token.get("authorization", ""):
             raise _no_token_error(name)
     if name == "kimi-web":
@@ -1009,6 +1098,12 @@ async def _kimi_token_fetch(name: str, cfg: dict[str, Any],
                             ) -> list[SubscriptionItem]:
     """httpx replay of the quota tab's two membership calls."""
     recipe = RECIPES[name]
+    if token.get("refresh_token"):
+        ttl = _jwt_ttl_remaining(token["authorization"])
+        if ttl is not None and ttl < 300:
+            await _kimi_refresh(name, cfg, token, root=root,
+                                transport=transport)
+            token = _load_token(name, root)
     authorization = token["authorization"]
     timeout = float(cfg.get("timeout", 20) or 20)
     headers = {

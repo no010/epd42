@@ -185,17 +185,31 @@ Two ways to supply the credential:
   ```
 
   No browser is launched at all; a bare token without the `Bearer ` prefix is
-  accepted too.
+  accepted too.  For Kimi also copy `refresh_token` (same Local Storage panel)
+  and pass `--refresh-token` - then even the 15-minute access token rotates
+  itself over httpx.
 
-A 401 (or an empty store) is healed automatically: `auto_refresh` (default
-on) re-captures the credential headless from the existing browser profile and
-retries once - no interaction as long as the profile's own session is alive.
-Set `auto_refresh = false` to fail hard instead, and `refresh_timeout` (seconds)
-bounds each re-capture.  Only when the session itself is gone does the card
-report the login command instead of stale numbers.  Token lifetime is recorded
-as `captured_at`; Kimi's is short (observed under an hour, so the heal usually
-fires every cycle or two), DeepSeek's is still being measured - verify the cards
-for a few days before retiring the Playwright dependency.
+Healing, newest first: on a 401 (or an empty store) `auto_refresh` (default
+on) tries, in order,
+
+1. **Kimi: the official refresh endpoint over httpx.**  Probing the live session
+   (2026-09-07) showed the SPA's lifecycle: `access_token` is a 15-minute HS512
+   JWT and `refresh_token` a 90-day one, rotated on every refresh.  The SPA
+   keeps both in localStorage; a captured `refresh_token` lets the provider call
+   `POST auth.kimi.com/.../AuthService/RefreshToken {"refreshToken":..}` and
+   rotate the pair itself - **no browser at all** for Kimi once a refresh_token
+   is stored (saved automatically by `login`, or pasted via
+   `--refresh-token` from DevTools → Application → Local Storage).
+2. Headless re-capture from the existing browser profile - the fallback for
+   DeepSeek (whose token lifetime is still being measured) and for a Kimi
+   session without a refresh_token.
+
+`auto_refresh = false` fails hard instead; `refresh_timeout` (seconds) bounds
+each re-capture.  Only when every path fails does the card report the login
+command instead of stale numbers.  Because the Kimi refresh token rotates on
+every use, keep exactly one refresher active (the provider, or the login page in
+your own browser - the two stay in sync when a captured pair is written back to
+localStorage).
 
 ### Bailian Token Plan without a browser
 

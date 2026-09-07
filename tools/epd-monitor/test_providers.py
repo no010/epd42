@@ -478,6 +478,52 @@ def test_token_auto_refresh() -> None:
         check(stats_hits["n"] == 2, "exactly one retry after the 401")
 
 
+
+def test_kimi_refresh_flow() -> None:
+    print("kimi refresh flow")
+    from providers.webquota import (_load_token, _save_token, _token_fetch)
+
+    stats_body = {"ratelimitCode5h": {"ratio": 0.05, "enabled": True,
+                                      "resetTime": "2026-09-07T10:22:33Z"},
+                  "ratelimitCode7d": {"ratio": 0.2, "enabled": True,
+                                      "resetTime": "2026-09-05T01:22:33Z"},
+                  "subscriptionBalance": {"amountUsedRatio": 0.1,
+                                          "expireTime":
+                                              "2026-09-25T01:22:33Z"}}
+    stats_hits, refresh_hits = {"n": 0}, {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("GetSubscriptionStats"):
+            stats_hits["n"] += 1
+            if stats_hits["n"] == 1:
+                return httpx.Response(401, json={})
+            return httpx.Response(200, json=stats_body)
+        if url.endswith("AuthService/RefreshToken"):
+            refresh_hits["n"] += 1
+            return httpx.Response(200, json={"accessToken": "fresh-access-1",
+                                             "refreshToken": "fresh-refresh-1"})
+        return httpx.Response(404, json={})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _save_token("kimi-web", {"authorization": "Bearer expired-access",
+                                 "refresh_token": "initial-refresh",
+                                 "captured_at": "2026-09-07T17:00:00+08:00"},
+                    root=root)
+        items = asyncio.run(_token_fetch("kimi-web", {"timeout": 5},
+                                         root=root,
+                                         transport=httpx.MockTransport(handler)))
+        check(items[0].plan_name.startswith("Kimi"),
+              "a 401 rotates the access token via RefreshToken and still renders")
+        check(refresh_hits["n"] == 1 and stats_hits["n"] == 2,
+              "one refresh, then one retry")
+        saved = _load_token("kimi-web", root)
+        check(saved["authorization"] == "Bearer fresh-access-1"
+              and saved["refresh_token"] == "fresh-refresh-1",
+              "the refreshed pair is persisted (the refresh token rotates)")
+
+
 def test_registry() -> None:
     print("registry")
     for provider_type, cls_name in (("kimi", "KimiProvider"), ("deepseek", "DeepSeekProvider"),
@@ -585,7 +631,7 @@ def main() -> int:
                  test_bailian_login_url, test_bailian_callback_parsing,
                  test_bailian_store, test_kimi_token,
                  test_deepseek_token, test_token_auto_refresh,
-                 test_registry):
+                 test_kimi_refresh_flow, test_registry):
         test()
     print("\nall checks passed")
     return 0

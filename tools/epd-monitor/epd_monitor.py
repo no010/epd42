@@ -206,6 +206,10 @@ def main() -> int:
                         help="login: paste the Authorization header (e.g. "
                              "'Bearer sk-...') you copied from DevTools so "
                              "auth=token needs no browser at all")
+    parser.add_argument("--refresh-token", default="",
+                        help="login (kimi): optional refresh token from "
+                             "DevTools -> Application -> Local Storage, lets "
+                             "the provider rotate access tokens with httpx")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
@@ -285,7 +289,8 @@ def main() -> int:
                 # from DevTools) so later fetches run as pure httpx.
                 from providers.webquota import token_capture_login
 
-                token_capture_login(args.provider, token=args.token or None)
+                token_capture_login(args.provider, token=args.token or None,
+                                    refresh_token=args.refresh_token or None)
             else:
                 from providers.webquota import open_login
 
