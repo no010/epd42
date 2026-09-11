@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json"
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --check .test-dist/tests/regression.js && node .test-dist/tests/regression.js"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

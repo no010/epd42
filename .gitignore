@@ -110,4 +110,7 @@ desktop/target/
 desktop/src-tauri/gen/
 desktop/web/node_modules/
 desktop/web/dist/
+desktop/web/.test-dist/
 desktop/node_modules/
+
+output/

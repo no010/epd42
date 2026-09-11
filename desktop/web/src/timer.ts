@@ -1,205 +1,72 @@
-// 番茄钟状态机 + localStorage 持久化（移植自 tools/epd-pomodoro/state.py）。
-
+// Display types and one-time legacy import only. Rust owns all timer mutations.
 export type Phase = "work" | "short_break" | "long_break";
-
-export const PHASES: Phase[] = ["work", "short_break", "long_break"];
-
-export const PHASE_NAMES: Record<Phase, [string, string]> = {
-  work: ["专注", "FOCUS"],
-  short_break: ["短休息", "SHORT BREAK"],
-  long_break: ["长休息", "LONG BREAK"],
-};
-
-export interface Durations {
-  workMin: number;
-  shortMin: number;
-  longMin: number;
-  rounds: number;
+export const PHASE_NAMES: Record<Phase, string> = { work: "专注", short_break: "短休息", long_break: "长休息" };
+export interface Session { id: number; task: string; endedAt: number; seconds: number; outcome: "completed" | "skipped" | "interrupted" }
+export interface TimerState {
+  phase: Phase; phaseSeconds: number; remaining: number; running: boolean;
+  pomodoroCount: number; cycleTotal: number; cycleDate: string; rounds: number;
+  updatedAt: number; task: string; nextTask: string | null; sessions: Session[];
+  sessionId: number; expiredAt: number | null;
 }
-
-export const DEFAULT_DURATIONS: Durations = { workMin: 25, shortMin: 5, longMin: 15, rounds: 4 };
-
-// 圆点要画进 400px 宽度：轮次上限防止圆点溢出画面
-export const MAX_ROUNDS = 12;
-
-export interface PomodoroState {
-  phase: Phase;
-  phaseSeconds: number;
-  remaining: number;
-  running: boolean;
-  pomodoroCount: number;
-  cycleTotal: number;
-  cycleDate: string;
-  rounds: number;
-  updatedAt: number; // epoch 秒
+export interface Settings {
+  workMin: number; shortMin: number; longMin: number; rounds: number;
+  autoAdvance: boolean; pushEnabled: boolean; pushInterval: number;
+  scanTimeout: number; driver: string; address: string | null;
 }
-
-const STORAGE_KEY = "epd42-pomodoro-state";
-
-export function minutesToSeconds(minutes: number): number {
-  return Math.max(1, Math.round(minutes * 60));
+export interface Snapshot { version: number; revision: number; state: TimerState; settings: Settings; stats: Record<string, number>; message: string }
+export interface Migration { state: TimerState | null; settings: Settings; stats: Record<string, number> }
+export const DEFAULT_SETTINGS: Settings = { workMin: 25, shortMin: 5, longMin: 15, rounds: 4,
+  autoAdvance: true, pushEnabled: false, pushInterval: 3, scanTimeout: 10, driver: "2", address: null };
+export function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
-
 export function mmss(seconds: number): string {
-  const total = Math.max(0, Math.ceil(seconds));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const n = Math.max(0, Math.ceil(seconds));
+  return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
 }
-
-function toKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function object(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  const parsed: unknown = JSON.parse(raw);
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
 }
-
-function today(): string {
-  return toKey(new Date());
-}
-
-export function newState(dur: Durations): PomodoroState {
-  const phaseSeconds = minutesToSeconds(dur.workMin);
+export function normalizeSettings(raw: Record<string, unknown>): Settings {
   return {
-    phase: "work",
-    phaseSeconds,
-    remaining: phaseSeconds,
-    running: false,
-    pomodoroCount: 0,
-    cycleTotal: 0,
-    cycleDate: today(),
-    rounds: Math.min(MAX_ROUNDS, Math.max(1, Math.round(dur.rounds))),
-    updatedAt: Date.now() / 1000,
+    workMin: boundedNumber(raw.workMin, 25, 1, 1440), shortMin: boundedNumber(raw.shortMin, 5, 1, 1440),
+    longMin: boundedNumber(raw.longMin, 15, 1, 1440), rounds: Math.round(boundedNumber(raw.rounds, 4, 1, 12)),
+    autoAdvance: raw.autoAdvance !== false, pushEnabled: raw.pushEnabled === true,
+    pushInterval: boundedNumber(raw.pushInterval, 3, 0, 1440), scanTimeout: Math.round(boundedNumber(raw.scanTimeout, 10, 3, 60)),
+    driver: ["1", "2", "3"].includes(String(raw.driver)) ? String(raw.driver) : "2",
+    address: typeof raw.address === "string" && raw.address.trim() ? raw.address.trim() : null,
   };
 }
-
-export function saveState(state: PomodoroState): void {
-  state.updatedAt = Date.now() / 1000;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-export function clearSavedState(): void {
-  localStorage.removeItem(STORAGE_KEY);
-}
-
-export function loadState(): PomodoroState | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    const data = JSON.parse(raw) as Partial<PomodoroState>;
-    if (!data.phase || !PHASES.includes(data.phase as Phase)) return null;
-    const state: PomodoroState = {
-      phase: data.phase as Phase,
-      phaseSeconds: Math.max(1, Math.trunc(data.phaseSeconds ?? 1500)),
-      remaining: Math.max(0, Math.min(Math.trunc(data.remaining ?? 0), data.phaseSeconds ?? 1500)),
-      running: Boolean(data.running),
-      pomodoroCount: Math.trunc(data.pomodoroCount ?? 0),
-      cycleTotal: Math.trunc(data.cycleTotal ?? 0),
-      cycleDate: typeof data.cycleDate === "string" ? data.cycleDate : "",
-      rounds: Math.min(MAX_ROUNDS, Math.max(1, Math.trunc(data.rounds ?? 4))),
-      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
-    };
-    // 加载时若在运行中，按墙钟回拨
-    if (state.running && state.updatedAt > 0) {
-      const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - state.updatedAt));
-      state.remaining = Math.max(0, state.remaining - elapsed);
-      if (state.remaining === 0) state.running = false;
+export function legacyMigration(storage: Pick<Storage, "getItem">): Migration {
+  const settings = normalizeSettings({ ...object(storage.getItem("epd42-pomodoro-settings")), address: storage.getItem("epd42-pomodoro-address") });
+  const data = object(storage.getItem("epd42-pomodoro-state"));
+  const stats: Record<string, number> = {};
+  for (const [date, count] of Object.entries(object(storage.getItem("epd42-pomodoro-stats")))) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date) && typeof count === "number" && Number.isFinite(count) && count >= 0)
+      stats[date] = Math.trunc(Math.min(count, 1000000));
+  }
+  if (!Object.keys(data).length) return { state: null, settings, stats };
+  if (!["work", "short_break", "long_break"].includes(String(data.phase))) throw new Error("旧版计时阶段无效，原数据已保留");
+  const sessions: Session[] = [];
+  if (Array.isArray(data.sessions)) for (const item of data.sessions) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.task === "string" && typeof row.endedAt === "number" && Number.isFinite(row.endedAt)
+      && typeof row.seconds === "number" && Number.isFinite(row.seconds)
+      && ["completed", "skipped", "interrupted"].includes(String(row.outcome))) {
+      sessions.push({ id: sessions.length + 1, task: row.task, endedAt: Math.trunc(row.endedAt), seconds: Math.max(0, row.seconds), outcome: row.outcome as Session["outcome"] });
     }
-    return state;
-  } catch {
-    return null;
   }
-}
-
-const DURATION_KEYS: Record<Phase, keyof Durations> = {
-  work: "workMin",
-  short_break: "shortMin",
-  long_break: "longMin",
-};
-
-export function phaseSecondsFor(phase: Phase, dur: Durations): number {
-  return minutesToSeconds(dur[DURATION_KEYS[phase]]);
-}
-
-/** 当前阶段结束：番茄计数 +1（跨天归零），进入短/长休息或回到专注。 */
-export function advance(state: PomodoroState, dur: Durations): void {
-  const todayStr = today();
-  if (state.cycleDate !== todayStr) {
-    state.cycleDate = todayStr;
-    state.cycleTotal = 0;
-  }
-  if (state.phase === "work") {
-    state.pomodoroCount += 1;
-    state.cycleTotal += 1;
-    state.phase = state.pomodoroCount % state.rounds === 0 ? "long_break" : "short_break";
-  } else {
-    if (state.phase === "long_break") state.pomodoroCount = 0;
-    state.phase = "work";
-  }
-  state.phaseSeconds = phaseSecondsFor(state.phase, dur);
-  state.remaining = state.phaseSeconds;
-}
-
-/** 手动跳过：不计数。 */
-export function skip(state: PomodoroState, dur: Durations): void {
-  if (state.phase === "work") {
-    state.phase = "short_break";
-  } else {
-    if (state.phase === "long_break") state.pomodoroCount = 0;
-    state.phase = "work";
-  }
-  state.phaseSeconds = phaseSecondsFor(state.phase, dur);
-  state.remaining = state.phaseSeconds;
-}
-// ── 每日番茄统计（localStorage，只留最近 14 天）───────────────────────────
-export type DailyStats = Record<string, number>;
-
-const STATS_KEY = "epd42-pomodoro-stats";
-
-export function loadStats(): DailyStats {
-  try {
-    const raw = localStorage.getItem(STATS_KEY);
-    const stats: DailyStats = raw ? (JSON.parse(raw) as DailyStats) : {};
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 13);
-    const kept: DailyStats = {};
-    for (const [date, count] of Object.entries(stats)) {
-      if (date >= toKey(cutoff) && count > 0) kept[date] = count;
-    }
-    return kept;
-  } catch {
-    return {};
-  }
-}
-
-/** 完成一个专注时调用，当天计数 +1。 */
-export function recordPomodoro(): void {
-  const key = today();
-  const stats = loadStats();
-  stats[key] = (stats[key] ?? 0) + 1;
-  localStorage.setItem(STATS_KEY, JSON.stringify(stats));
-}
-
-export interface DayStat {
-  date: string;
-  label: string;
-  count: number;
-  isToday: boolean;
-}
-
-/** 最近 n 天（含今天），按时间升序。 */
-export function lastNDays(n: number): DayStat[] {
-  const stats = loadStats();
-  const todayKey = today();
-  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
-  const out: DayStat[] = [];
-  for (let i = n - 1; i >= 0; i -= 1) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    const key = toKey(d);
-    out.push({
-      date: key,
-      label: key === todayKey ? "今" : weekdays[d.getDay()],
-      count: stats[key] ?? 0,
-      isToday: key === todayKey,
-    });
-  }
-  return out;
+  const phaseSeconds = boundedNumber(data.phaseSeconds, 1500, 1, 86400);
+  return { settings, stats, state: {
+    phase: data.phase as Phase, phaseSeconds, remaining: boundedNumber(data.remaining, phaseSeconds, 0, phaseSeconds),
+    running: data.running === true, pomodoroCount: Math.trunc(boundedNumber(data.pomodoroCount, 0, 0, 1000000)),
+    cycleTotal: Math.trunc(boundedNumber(data.cycleTotal, 0, 0, 1000000)), cycleDate: typeof data.cycleDate === "string" ? data.cycleDate : "",
+    rounds: settings.rounds, updatedAt: boundedNumber(data.updatedAt, 0, 0, Number.MAX_SAFE_INTEGER),
+    task: typeof data.task === "string" ? data.task.slice(0, 120) : "", nextTask: null,
+    sessions: sessions.slice(-500), sessionId: sessions.length + 1,
+    expiredAt: typeof data.expiredAt === "number" && Number.isFinite(data.expiredAt) ? Math.trunc(data.expiredAt) : null,
+  } };
 }

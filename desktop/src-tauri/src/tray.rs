@@ -5,7 +5,7 @@
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, Emitter, Manager, WindowEvent};
+use tauri::{App, Manager, WindowEvent};
 
 /// 关窗 = 隐藏到托盘，而不是退出（真正退出走托盘菜单）。
 pub fn setup_close_to_tray(app: &App) -> tauri::Result<()> {
@@ -35,10 +35,10 @@ pub fn setup_tray(app: &App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main(app),
             "toggle" => {
-                let _ = app.emit("menu-toggle", ());
+                crate::runtime::tray_action(app, false);
             }
             "push" => {
-                let _ = app.emit("menu-push", ());
+                crate::runtime::tray_action(app, true);
             }
             "quit" => app.exit(0),
             _ => {}

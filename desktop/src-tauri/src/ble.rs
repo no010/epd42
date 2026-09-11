@@ -28,7 +28,7 @@ pub struct DeviceInfo {
     pub rssi: Option<i16>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PushReport {
     pub planes: usize,
@@ -123,6 +123,16 @@ fn check_status(ack: &[u8], what: &str) -> Result<(), String> {
     }
 }
 
+fn status_driver(status: &[u8]) -> Result<u8, String> {
+    // GET_STATUS: cmd, active, plane, received:u16, plane_bytes:u16, driver.
+    // Match the existing Python client: eight required bytes, with optional
+    // trailing fields/padding. Never take the driver from the final byte.
+    if status.len() < 8 || status[0] != core::CMD_GET_STATUS {
+        return Err(format!("设备状态应答不足 8 字节或命令错误：收到 {} 字节，原始数据 {status:02X?}", status.len()));
+    }
+    Ok(status[7])
+}
+
 async fn stream_planes<S>(
     peripheral: &Peripheral,
     characteristic: &Characteristic,
@@ -192,7 +202,11 @@ pub async fn push_frame(
     luma: &[u8],
     driver: u8,
     scan_timeout_secs: u64,
+    mut cancel: tokio::sync::watch::Receiver<u64>,
 ) -> Result<PushReport, String> {
+    if !(1..=3).contains(&driver) {
+        return Err("不支持的屏幕驱动".into());
+    }
     if luma.len() != core::SCREEN_WIDTH * core::SCREEN_HEIGHT {
         return Err(format!(
             "像素数据需要 {}*{} = {} 个字节，收到 {}",
@@ -206,7 +220,7 @@ pub async fn push_frame(
     let manager = Manager::new().await.map_err(|e| e.to_string())?;
     let adapter = first_adapter(&manager).await?;
 
-    let peripheral = match address {
+    let find = async { Ok::<Peripheral, String>(match address {
         Some(addr) => {
             let found = adapter
                 .peripherals()
@@ -248,8 +262,18 @@ pub async fn push_frame(
                 .map(|(p, _)| p)
                 .ok_or_else(|| "扫描范围内没有 NRF_EPD 设备，请先扫描并选择设备".to_string())?
         }
+    }) };
+    let peripheral = tokio::select! {
+        biased;
+        _ = cancel.changed() => {
+            let _ = adapter.stop_scan().await;
+            return Err("推送已取消".into());
+        }
+        result = find => result?,
     };
 
+    // All exits after a connection attempt pass through bounded cleanup.
+    let transfer = async {
     peripheral.connect().await.map_err(|e| e.to_string())?;
     peripheral
         .discover_services()
@@ -267,16 +291,51 @@ pub async fn push_frame(
         .await
         .map_err(|e| e.to_string())?;
 
+    peripheral.write(&characteristic, &[core::CMD_GET_STATUS], WriteType::WithResponse)
+        .await.map_err(|e| e.to_string())?;
+    let status = wait_ack(&mut notifications, characteristic.uuid, core::CMD_GET_STATUS).await?;
+    if status_driver(&status)? != driver {
+        peripheral.write(&characteristic, &[core::CMD_INIT, driver], WriteType::WithResponse)
+            .await.map_err(|e| e.to_string())?;
+        peripheral.write(&characteristic, &[core::CMD_GET_STATUS], WriteType::WithResponse)
+            .await.map_err(|e| e.to_string())?;
+        let status = wait_ack(&mut notifications, characteristic.uuid, core::CMD_GET_STATUS).await?;
+        if status_driver(&status)? != driver { return Err("设备驱动切换未生效".into()); }
+    }
     let planes = core::pack_planes(luma, driver);
-    let result =
-        stream_planes(&peripheral, &characteristic, &mut notifications, &planes).await;
-    let _ = peripheral.disconnect().await;
+    stream_planes(&peripheral, &characteristic, &mut notifications, &planes).await
+    };
+    let result = tokio::select! {
+        biased;
+        _ = cancel.changed() => Err("推送已取消".into()),
+        result = tokio::time::timeout(Duration::from_secs(90), transfer) =>
+            result.unwrap_or_else(|_| Err("蓝牙传输超时，请检查设备后重试".into())),
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(5), peripheral.disconnect()).await;
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_driver_rejects_truncated_responses() {
+        assert!(status_driver(&[core::CMD_GET_STATUS, 2]).is_err());
+        let mut ack = [0; 8];
+        ack[0] = core::CMD_GET_STATUS;
+        ack[7] = 3;
+        assert_eq!(status_driver(&ack).unwrap(), 3);
+    }
+
+    #[test]
+    fn status_driver_accepts_extended_or_padded_responses() {
+        let mut ack = vec![core::CMD_GET_STATUS, 0, 255, 0, 0, 0x98, 0x3A, 2];
+        ack.extend_from_slice(&[0; 12]);
+        assert_eq!(status_driver(&ack).unwrap(), 2);
+        ack[19] = 3;
+        assert_eq!(status_driver(&ack).unwrap(), 2);
+    }
 
     // 前端按驼峰读取推送结果：一旦回退成蛇形，状态行就会显示 "undefined 字节"
     #[test]

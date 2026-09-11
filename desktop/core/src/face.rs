@@ -369,6 +369,7 @@ pub fn geometry() -> Geometry {
     }
 }
 
+
 pub fn render(state: &FaceState) -> Luma {
     let mut buf = vec![255u8; SCREEN_WIDTH * SCREEN_HEIGHT];
     let lay = layout();

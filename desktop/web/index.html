@@ -13,6 +13,8 @@
     <canvas id="screen" width="400" height="300"></canvas>
 
     <div id="status" class="status"></div>
+    <label class="task-label">当前任务 <input id="task" type="text" maxlength="120" placeholder="选填，仅在桌面记录中保留" /></label>
+    <div class="row"><label class="task-label">下一番茄 <input id="next-task" type="text" maxlength="120" placeholder="留空可保存为未命名任务" /></label><button id="save-next-task">保存</button><button id="clear-next-task">取消安排</button></div>
 
     <section class="controls">
       <div class="row">
@@ -32,6 +34,7 @@
           <option value="3">4.2in B V2 (BWR)</option>
         </select>
         <button id="push" class="primary">推送到墨水屏</button>
+        <button id="cancel-push" disabled>取消推送</button>
       </div>
       <div class="row" id="push-status"></div>
     </section>
@@ -46,10 +49,13 @@
         <label>推送间隔（分）<input id="push-interval" type="number" min="0" value="3" /></label>
         <label class="check"><input id="push-enabled" type="checkbox" /> 自动推送</label>
         <label class="check"><input id="autostart" type="checkbox" /> 开机自启</label>
+        <label class="check"><input id="auto-advance" type="checkbox" checked /> 自动开始下一阶段</label>
       </div>
+      <p>推送间隔为 0 时，仅在操作或阶段变化时同步。</p>
     </section>
 
         <section class="stats" id="stats"></section>
+    <details class="stats"><summary>最近专注记录（最多保存 500 条）</summary><div id="history"></div></details>
 
     <pre id="log"></pre>
   </main>

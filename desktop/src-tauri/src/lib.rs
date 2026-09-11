@@ -1,9 +1,13 @@
 mod ble;
-mod commands;
+mod runtime;
+mod session;
+mod render;
 mod tray;
+mod notifications;
 
-use commands::AppState;
-use tauri::{Emitter, Manager};
+use runtime::AppState;
+use std::{sync::Arc, time::Instant};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -12,14 +16,12 @@ pub fn run() {
         .expect("注册全局快捷键失败")
         .with_handler(|app, shortcut, event| {
             if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                let key = shortcut.to_string().to_lowercase();
-                let _ = if key.ends_with("+s") {
-                    app.emit("menu-push", ())
-                } else if key.ends_with("+p") {
-                    app.emit("menu-toggle", ())
-                } else {
-                    Ok(())
-                };
+                use tauri_plugin_global_shortcut::Code;
+                if shortcut.key == Code::KeyS {
+                    runtime::tray_action(app, true);
+                } else if shortcut.key == Code::KeyP {
+                    runtime::tray_action(app, false);
+                }
             }
         })
         .build();
@@ -38,19 +40,26 @@ pub fn run() {
             Some(vec![]),
         ))
         .plugin(shortcut_plugin)
-        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
-            commands::scan_devices,
-            commands::render_face,
-            commands::push_frame,
-            commands::notify,
-            commands::set_autostart,
-            commands::get_autostart,
-            commands::set_tray_tooltip,
+            runtime::scan_devices,
+            runtime::render_face,
+            runtime::initialize_timer,
+            runtime::get_snapshot,
+            runtime::timer_action,
+            runtime::request_push,
+            runtime::cancel_push,
+            runtime::get_push_status,
+            runtime::set_autostart,
+            runtime::get_autostart,
         ])
         .setup(|app| {
+            let path = app.path().app_local_data_dir()?.join("sessions-v1.json");
+            let engine = session::Engine::open(path, Instant::now(), session::now_ms()).map_err(std::io::Error::other)?;
+            let state = Arc::new(AppState::new(engine));
+            app.manage(state.clone());
             tray::setup_close_to_tray(app)?;
             tray::setup_tray(app)?;
+            runtime::start_background(app.handle().clone(), state);
             Ok(())
         })
         .run(tauri::generate_context!())
