@@ -1,354 +1,340 @@
-let bleDevice;
-let gattServer;
-let epdService;
-let epdCharacteristic;
-let reconnectTrys = 0;
+/* Web app wiring: one Web Bluetooth connection, four content modes sharing a
+ * 400x300 canvas.  All modes push through the stream protocol in epd.js -
+ * PackBits in the browser, ~190 packets per plane, refresh only on the final
+ * plane, never a SLEEP.
+ */
+'use strict';
 
-let canvas;
-let startTime;
-const EpdCmd = {
-  SET_PINS: 0x00,
-  INIT: 0x01,
-  CLEAR: 0x02,
-  SEND_CMD: 0x03,
-  SEND_DATA: 0x04,
-  DISPLAY: 0x05,
-  SLEEP: 0x06,
+let bleDevice = null;
+let gattServer = null;
+let link = null;
+let pushBusy = false;
+let activeTab = 'pomodoro';
+let lastImage = null;
 
-  SET_CONFIG: 0x90,
-  SYS_RESET: 0x91,
-  SYS_SLEEP: 0x92,
-  CFG_ERASE: 0x99,
-};
+const $ = (id) => document.getElementById(id);
 
-function resetVariables() {
-  gattServer = null;
-  epdService = null;
-  epdCharacteristic = null;
-  document.getElementById("log").value = '';
-}
+function setStatus(text) { $('status').innerHTML = text; }
 
-async function handleError(error) {
-  console.log(error);
-  resetVariables();
-  if (bleDevice == null)
-    return;
-  if (reconnectTrys <= 5) {
-    reconnectTrys++;
-    await connect();
-  }
-  else {
-    addLog("连接失败！");
-    reconnectTrys = 0;
+function addLog(html) {
+  const log = $('log');
+  const now = new Date();
+  const time = `${String(now.getHours()).padStart(2, '0')}:`
+             + `${String(now.getMinutes()).padStart(2, '0')}:`
+             + `${String(now.getSeconds()).padStart(2, '0')} `;
+  log.innerHTML += `<span class="time">${time}</span>${html}<br>`;
+  log.scrollTop = log.scrollHeight;
+  while ((log.innerHTML.match(/<br>/g) || []).length > 40) {
+    log.innerHTML = log.innerHTML.substring(log.innerHTML.search('<br>') + 4);
   }
 }
 
-async function write(cmd, data, withResponse = true) {
-  if (!epdCharacteristic) {
-    addLog("服务不可用，请检查蓝牙连接");
-    return false;
+function stampNow() {
+  const d = new Date();
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} `
+       + `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/* ── preview ──────────────────────────────────────────────────────────── */
+
+function renderPreview() {
+  const canvas = $('screen');
+  if (activeTab === 'pomodoro') {
+    composeFace(timer.state, canvas, stampNow());
+    const s = timer.state;
+    const left = `${String(Math.floor(s.remaining / 60)).padStart(2, '0')}:`
+               + `${String(s.remaining % 60).padStart(2, '0')}`;
+    $('pomo-summary').textContent =
+      `今日完成 ${s.cycleTotal} 个番茄 · 本轮 ${s.pomodoroCount}/${s.rounds} · `
+      + `${PHASE_NAMES[s.phase][0]}剩 ${left}${s.running ? '' : '（暂停）'}`;
+  } else if (activeTab === 'cards') {
+    composeCards(loadCards(), canvas, stampNow());
   }
-  let payload = [cmd];
-  if (data) {
-    if (typeof data == 'string') data = hex2bytes(data);
-    if (data instanceof Uint8Array) data = Array.from(data);
-    payload.push(...data)
-  }
-  addLog(`<span class="action">⇑</span> ${bytes2hex(payload)}`);
+  // image/debug tabs keep whatever is on the canvas
+}
+
+/* ── pushing ──────────────────────────────────────────────────────────── */
+
+async function pushCanvas(label) {
+  if (!link) { setStatus('未连接墨水屏'); return false; }
+  if (pushBusy) { setStatus('上一次推送仍在进行'); return false; }
+  pushBusy = true;
   try {
-    if (withResponse && epdCharacteristic.writeValueWithResponse) {
-      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
-    } else if (!withResponse && epdCharacteristic.writeValueWithoutResponse) {
-      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
-    } else {
-      await epdCharacteristic.writeValue(Uint8Array.from(payload));
+    if (link.planeBytes !== PLANE_BYTES) {
+      throw new EpdError(`设备平面为 ${link.planeBytes} 字节,本页生成 ${PLANE_BYTES} 字节`);
     }
+    const canvas = $('screen');
+    const planes = [{ index: 0, data: canvasToPlane(canvas) }];
+    if (link.driverId === 3) planes.push({ index: 1, data: allPaperPlane() });
+
+    for (let i = 0; i < planes.length; i++) {
+      const plane = planes[i];
+      const last = i === planes.length - 1;
+      const stat = await link.streamPlane(plane.index, plane.data, last,
+        (sent, total) => setStatus(`${label}: ${sent}/${total} 包…`));
+      addLog(`${label} 平面${plane.index}: ${stat.raw}B → ${stat.encoded}B `
+             + `(${Math.round(stat.encoded * 100 / stat.raw)}%,${stat.packets} 包) `
+             + `begin ${stat.beginS.toFixed(2)}s + 数据 ${stat.dataS.toFixed(1)}s `
+             + `+ 刷新 ${stat.endS.toFixed(1)}s`);
+    }
+    setStatus(`${label}: 推送完成,面板已刷新`);
+    addLog(`<span class="action">✓</span> ${label} 推送完成`);
+    return true;
   } catch (e) {
     console.error(e);
-    if (e.message) addLog("write: " + e.message);
+    addLog(`<span class="action">✗</span> 推送失败: ${e.message}`);
+    setStatus(`推送失败: ${e.message}`);
+    if (link) await link.abort();
     return false;
-  }
-  return true;
-}
-
-async function epdWrite(cmd, data) {
-  if (typeof data == 'string') data = hex2bytes(data);
-
-  const mtuSize = Math.max(1, Number(document.getElementById('mtusize').value) || 20);
-  const chunkSize = Math.max(1, mtuSize - 1);
-  const interleavedCount = Math.max(0, Number(document.getElementById('interleavedcount').value) || 0);
-  const count = Math.ceil(data.length / chunkSize);
-  let chunkIdx = 0;
-  let noReplyCount = 0;
-
-  if (!await write(EpdCmd.SEND_CMD, [cmd])) {
-    return false;
-  }
-  for (let i = 0; i < data.length; i += chunkSize) {
-    let currentTime = (new Date().getTime() - startTime) / 1000.0;
-    setStatus(`命令：0x${cmd.toString(16)}, 数据块: ${chunkIdx + 1}/${count}, 总用时: ${currentTime}s`);
-    if (noReplyCount > 0) {
-      if (!await write(EpdCmd.SEND_DATA, data.slice(i, i + chunkSize), false)) {
-        return false;
-      }
-      noReplyCount--;
-    } else {
-      if (!await write(EpdCmd.SEND_DATA, data.slice(i, i + chunkSize), true)) {
-        return false;
-      }
-      noReplyCount = interleavedCount;
-    }
-    chunkIdx++;
-  }
-  return true;
-}
-
-async function setDriver() {
-  await write(EpdCmd.SET_PINS, document.getElementById("epdpins").value);
-  await write(EpdCmd.INIT, document.getElementById("epddriver").value);
-}
-
-async function clearscreen() {
-  if (confirm('确认清除屏幕内容?')) {
-    await write(EpdCmd.CLEAR);
+  } finally {
+    pushBusy = false;
   }
 }
 
-async function sendcmd() {
-  const cmdTXT = document.getElementById('cmdTXT').value;
-  if (cmdTXT == '') return;
-  const bytes = hex2bytes(cmdTXT);
-  await write(bytes[0], bytes.length > 1 ? bytes.slice(1) : null);
-}
+/* ── connection ───────────────────────────────────────────────────────── */
 
-async function send4GrayLut() {
-  await epdWrite(0x20, "000A0000000160141400000100140000000100130A010001000000000000000000000000000000000000"); // vcom
-  await epdWrite(0x21, "400A0000000190141400000110140A000001A01301000001000000000000000000000000000000000000"); // red not use
-  await epdWrite(0x22, "400A0000000190141400000100140A000001990C01030401000000000000000000000000000000000000"); // bw r
-  await epdWrite(0x23, "400A0000000190141400000100140A000001990B04040101000000000000000000000000000000000000"); // wb w
-  await epdWrite(0x24, "800A0000000190141400000120140A000001501301000001000000000000000000000000000000000000"); // bb b
-  await epdWrite(0x25, "400A0000000190141400000110140A000001A01301000001000000000000000000000000000000000000"); // vcom
-}
-
-function getImageData(canvas, driver, mode) {
-  if (mode === '4gray') {
-    return canvas2gray(canvas);
-  } else {
-    let data = canvas2bytes(canvas, 'bw');
-    if (driver === '03') {
-      if (mode.startsWith('bwr')) {
-        data.push(...canvas2bytes(canvas, 'red'));
-      } else {
-        const data1 = 'F'.repeat(data.length);
-        data.push(...data1);
-      }
-    }
-    return data;
-  }
-}
-
-async function sendimg() {
-  startTime = new Date().getTime();
-  const canvas = document.getElementById("canvas");
-  const driver = document.getElementById("epddriver").value;
-  const mode = document.getElementById('dithering').value;
-  const imgArray = getImageData(canvas, driver, mode);
-  const bwArrLen = canvas.width * canvas.height / 8;
-
-  if (imgArray.length == bwArrLen * 2) {
-    await epdWrite(0x10, imgArray.slice(0, bwArrLen));
-    await epdWrite(0x13, imgArray.slice(bwArrLen));
-  } else {
-    await epdWrite(driver === "04" ? 0x24 : 0x13, imgArray);
-  }
-
-  if (mode === "4gray") {
-    await epdWrite(0x00, [0x3F]); // Load LUT from register
-    await send4GrayLut();
-    await write(EpdCmd.DISPLAY);
-    await epdWrite(0x00, [0x1F]); // Load LUT from OTP
-  } else {
-    await write(EpdCmd.DISPLAY);
-  }
-
-  const sendTime = (new Date().getTime() - startTime) / 1000.0;
-  addLog(`发送完成！耗时: ${sendTime}s`);
-  setStatus(`发送完成！耗时: ${sendTime}s`);
-}
-
-function updateButtonStatus() {
-  const connected = gattServer != null && gattServer.connected;
-  const status = connected ? null : 'disabled';
-  document.getElementById("reconnectbutton").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
-  document.getElementById("sendcmdbutton").disabled = status;
-  document.getElementById("clearscreenbutton").disabled = status;
-  document.getElementById("sendimgbutton").disabled = status;
-  document.getElementById("setDriverbutton").disabled = status;
-}
-
-function disconnect() {
-  updateButtonStatus();
-  resetVariables();
-  addLog('已断开连接.');
-  document.getElementById("connectbutton").innerHTML = '连接';
-}
-
-async function preConnect() {
-  if (gattServer != null && gattServer.connected) {
-    if (bleDevice != null && bleDevice.gatt.connected) {
-      await write(EpdCmd.SLEEP);
-      bleDevice.gatt.disconnect();
-    }
-  }
-  else {
-    reconnectTrys = 0;
-    try {
-      bleDevice = await navigator.bluetooth.requestDevice({
-        optionalServices: ['62750001-d828-918d-fb46-b6c11c675aec'],
-        // acceptAllDevices: true
-        filters: [{ namePrefix: 'NRF_EPD_' }]
-      });
-    } catch (e) {
-      if (e.message) addLog(e.message);
-      return;
-    }
-
-    await bleDevice.addEventListener('gattserverdisconnected', disconnect);
-    try {
-      await connect();
-    } catch (e) {
-      await handleError(e);
-    }
-  }
-}
-
-async function reConnect() {
-  reconnectTrys = 0;
-  if (bleDevice != null && bleDevice.gatt.connected)
-    bleDevice.gatt.disconnect();
-  resetVariables();
-  addLog("正在重连");
-  setTimeout(async function () { await connect(); }, 300);
+function updateConnUi() {
+  const connected = !!(gattServer && gattServer.connected);
+  $('connectbutton').textContent = connected ? '断开' : '连接墨水屏';
+  ['push-pomodoro', 'push-cards', 'push-image', 'set-driver', 'clearscreen',
+   'sendcmdbutton'].forEach((id) => { $(id).disabled = !connected; });
 }
 
 async function connect() {
-  if (epdCharacteristic == null && bleDevice != null) {
-    addLog("正在连接: " + bleDevice.name);
+  bleDevice = await navigator.bluetooth.requestDevice({
+    filters: [{ namePrefix: 'NRF_EPD_' }],
+    optionalServices: [EPD_SERVICE_UUID],
+  });
+  addLog(`正在连接: ${bleDevice.name}`);
+  bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+  gattServer = await bleDevice.gatt.connect();
+  const service = await gattServer.getPrimaryService(EPD_SERVICE_UUID);
+  const char = await service.getCharacteristic(EPD_CHAR_UUID);
+  await char.startNotifications();
+  char.addEventListener('characteristicvaluechanged', (event) => {
+    link.handleNotify(event.target.value);
+  });
+  link = new EpdLink(char);
+  await link.queryStatus();
+  $('driver').value = String(link.driverId);
+  $('device-info').textContent =
+    `${bleDevice.name} · 驱动 ${link.driverId} (${DRIVER_NAMES[link.driverId] || '未知'})`
+    + ` · 平面 ${link.planeBytes}B`;
+  addLog(`已连接,驱动 ${link.driverId},平面 ${link.planeBytes} 字节`);
+  updateConnUi();
+}
 
-    gattServer = await bleDevice.gatt.connect();
-    addLog('  找到 GATT Server');
+function onDisconnected() {
+  gattServer = null;
+  link = null;
+  $('device-info').textContent = '未连接 — Chrome/Edge 桌面版，Web Bluetooth';
+  addLog('已断开连接');
+  updateConnUi();
+}
 
-    epdService = await gattServer.getPrimaryService('62750001-d828-918d-fb46-b6c11c675aec');
-    addLog('  找到 EPD Service');
+async function connectButton() {
+  if (gattServer && gattServer.connected) {
+    bleDevice.gatt.disconnect();
+    return;
+  }
+  try {
+    await connect();
+    renderPreview();
+  } catch (e) {
+    console.error(e);
+    addLog(`连接失败: ${e.message}`);
+    setStatus(`连接失败: ${e.message}`);
+  }
+}
 
-    epdCharacteristic = await epdService.getCharacteristic('62750002-d828-918d-fb46-b6c11c675aec');
-    addLog('  找到 Characteristic');
+/* ── tabs ─────────────────────────────────────────────────────────────── */
 
-    await epdCharacteristic.startNotifications();
-    epdCharacteristic.addEventListener('characteristicvaluechanged', (event) => {
-      const data = new Uint8Array(event.target.value.buffer, event.target.value.byteOffset, event.target.value.byteLength);
-      addLog(`<span class="action">⇓</span> ${bytes2hex(data)}`);
-      let pins = bytes2hex(data.slice(0, 7));
-      if (data.length > 10 && data[10] !== 0xFF) {
-        pins += bytes2hex(data.slice(10, 11));
-      }
-      document.getElementById("epdpins").value = pins;
-      document.getElementById("epddriver").value = bytes2hex(data.slice(7, 8));
+function switchTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.tabs button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  document.querySelectorAll('section.tab').forEach((s) => {
+    s.classList.toggle('active', s.id === `tab-${name}`);
+  });
+  renderPreview();
+}
+
+/* ── pomodoro tab ─────────────────────────────────────────────────────── */
+
+let timer;
+
+function bindPomodoro() {
+  timer = new PomodoroTimer((state, phaseChanged) => {
+    if (activeTab === 'pomodoro') renderPreview();
+    if (phaseChanged && link && $('pomo-autopush').checked) {
+      void pushCanvas('番茄钟');
+    }
+  });
+
+  $('start').addEventListener('click', () => timer.startPause());
+  $('skip').addEventListener('click', () => timer.skip());
+  $('reset').addEventListener('click', () => timer.reset());
+  $('wipe').addEventListener('click', () => timer.wipe());
+  $('push-pomodoro').addEventListener('click', () => {
+    renderPreview();
+    void pushCanvas('番茄钟');
+  });
+
+  for (const key of ['work', 'short', 'long', 'rounds']) {
+    $(key).value = timer.cfg[key === 'work' ? 'workMinutes'
+      : key === 'short' ? 'shortMinutes'
+      : key === 'long' ? 'longMinutes' : 'rounds'];
+    $(key).addEventListener('change', () => {
+      const cfg = loadCfg();
+      cfg[{ work: 'workMinutes', short: 'shortMinutes',
+            long: 'longMinutes', rounds: 'rounds' }[key]] = Number($(key).value);
+      saveCfg(cfg);
+      timer.cfgChanged();
+      renderPreview();
     });
+  }
+  $('auto-advance').addEventListener('change', () => {
+    timer.autoAdvance = $('auto-advance').checked;
+  });
+}
 
-    await write(EpdCmd.INIT);
+/* ── cards tab ────────────────────────────────────────────────────────── */
 
-    document.getElementById("connectbutton").innerHTML = '断开';
-    updateButtonStatus();
+const CARD_FIELDS = [
+  ['planName', '名称', 'text'],
+  ['unit', '单位', 'text'],
+  ['quotaUsed', '已用', 'number'],
+  ['quotaTotal', '总量', 'number'],
+  ['balanceYuan', '余额（元）', 'number'],
+  ['extra', '指标行附加', 'text'],
+  ['note', '备注行', 'text'],
+];
+
+function buildCardEditors() {
+  const host = $('card-editors');
+  host.innerHTML = '';
+  loadCards().forEach((card, index) => {
+    const box = document.createElement('div');
+    box.className = 'card-editor';
+    box.innerHTML = `<strong>卡 ${index + 1}</strong> `
+      + `<label class="hint"><input type="checkbox" data-field="showBar" `
+      + `${card.showBar !== false ? 'checked' : ''} /> 显示进度条</label>`;
+    for (const [field, label, type] of CARD_FIELDS) {
+      const el = document.createElement('label');
+      el.innerHTML = `${label} `
+        + `<input type="${type}" data-field="${field}" value="${card[field] ?? ''}" />`;
+      box.appendChild(el);
+    }
+    box.addEventListener('input', () => {
+      const cards = loadCards();
+      box.querySelectorAll('[data-field]').forEach((input) => {
+        const field = input.dataset.field;
+        cards[index][field] = input.type === 'checkbox' ? input.checked
+          : input.type === 'number' ? Number(input.value) : input.value;
+      });
+      saveCards(cards);
+      renderPreview();
+    });
+    host.appendChild(box);
+  });
+}
+
+function bindCards() {
+  buildCardEditors();
+  $('cards-demo').addEventListener('click', () => {
+    localStorage.removeItem(CARDS_STORE_KEY);
+    buildCardEditors();
+    renderPreview();
+  });
+  $('push-cards').addEventListener('click', () => {
+    composeCards(loadCards(), $('screen'), stampNow());
+    void pushCanvas('用量卡');
+  });
+}
+
+/* ── image tab ────────────────────────────────────────────────────────── */
+
+function applyDithering() {
+  const canvas = $('screen');
+  const ctx = canvas.getContext('2d');
+  if (lastImage) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(lastImage, 0, 0, lastImage.width, lastImage.height,
+                  0, 0, canvas.width, canvas.height);
+  }
+  const mode = $('dithering').value;
+  if (mode !== 'none') {
+    dithering(ctx, canvas.width, canvas.height,
+              parseInt($('threshold').value, 10) || 128, mode);
   }
 }
 
-function setStatus(statusText) {
-  document.getElementById("status").innerHTML = statusText;
+function bindImage() {
+  $('image_file').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(image.src);
+      lastImage = image;
+      applyDithering();
+    };
+    image.src = URL.createObjectURL(file);
+  });
+  $('apply-dither').addEventListener('click', applyDithering);
+  $('push-image').addEventListener('click', () => void pushCanvas('图片'));
 }
 
-function addLog(logTXT) {
-  const log = document.getElementById("log");
-  const now = new Date();
-  const time = String(now.getHours()).padStart(2, '0') + ":" +
-    String(now.getMinutes()).padStart(2, '0') + ":" +
-    String(now.getSeconds()).padStart(2, '0') + " ";
-  log.innerHTML += '<span class="time">' + time + '</span>' + logTXT + '<br>';
-  log.scrollTop = log.scrollHeight;
-  while ((log.innerHTML.match(/<br>/g) || []).length > 20) {
-    var logs_br_position = log.innerHTML.search("<br>");
-    log.innerHTML = log.innerHTML.substring(logs_br_position + 4);
-    log.scrollTop = log.scrollHeight;
-  }
-}
-
-function clearLog() {
-  document.getElementById("log").innerHTML = '';
-}
+/* ── debug tab ────────────────────────────────────────────────────────── */
 
 function hex2bytes(hex) {
-  for (var bytes = [], c = 0; c < hex.length; c += 2)
+  const bytes = [];
+  for (let c = 0; c < hex.length; c += 2) {
     bytes.push(parseInt(hex.substr(c, 2), 16));
-  return new Uint8Array(bytes);
-}
-
-function bytes2hex(data) {
-  return new Uint8Array(data).reduce(
-    function (memo, i) {
-      return memo + ("0" + i.toString(16)).slice(-2);
-    }, "");
-}
-
-function intToHex(intIn) {
-  let stringOut = ("0000" + intIn.toString(16)).substr(-4)
-  return stringOut.substring(2, 4) + stringOut.substring(0, 2);
-}
-
-async function update_image() {
-  const canvas = document.getElementById("canvas");
-  const ctx = canvas.getContext("2d");
-
-  let image = new Image();;
-  const image_file = document.getElementById('image_file');
-  if (image_file.files.length > 0) {
-    const file = image_file.files[0];
-    image.src = URL.createObjectURL(file);
-  } else {
-    image.src = document.getElementById('demo-img').src;
   }
-
-  image.onload = function (event) {
-    URL.revokeObjectURL(this.src);
-    ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, canvas.width, canvas.height);
-    convert_dithering()
-  }
+  return Uint8Array.from(bytes);
 }
 
-function clear_canvas() {
-  if (confirm('确认清除画布内容?')) {
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
+function bindDebug() {
+  $('set-driver').addEventListener('click', async () => {
+    try {
+      await link.setDriver(Number($('driver').value));
+      $('device-info').textContent =
+        `${bleDevice.name} · 驱动 ${link.driverId} `
+        + `(${DRIVER_NAMES[link.driverId] || '未知'}) · 平面 ${link.planeBytes}B`;
+      addLog(`驱动已切换为 ${link.driverId}`);
+    } catch (e) {
+      addLog(`切换驱动失败: ${e.message}`);
+    }
+  });
+  $('clearscreen').addEventListener('click', async () => {
+    if (confirm('确认清除屏幕内容?')) {
+      await link.clear();
+      addLog('已发送清屏命令');
+    }
+  });
+  $('sendcmdbutton').addEventListener('click', async () => {
+    const text = $('cmdTXT').value.trim();
+    if (!text) return;
+    const bytes = hex2bytes(text);
+    await link.sendRaw(bytes);
+    addLog(`<span class="action">⇑</span> ${text}`);
+  });
 }
 
-function convert_dithering() {
-  const ctx = canvas.getContext("2d");
-  const mode = document.getElementById('dithering').value;
-  if (mode.startsWith('bwr')) {
-    ditheringCanvasByPalette(canvas, bwrPalette, mode);
-  } else if (mode === '4gray') {
-    dithering(ctx, canvas.width, canvas.height, 4, "gray");
-  } else {
-    dithering(ctx, canvas.width, canvas.height, parseInt(document.getElementById('threshold').value), mode);
-  }
-}
+/* ── boot ─────────────────────────────────────────────────────────────── */
 
 document.body.onload = () => {
-  canvas = document.getElementById('canvas');
-
-  updateButtonStatus();
-  update_image();
-
-  document.getElementById('dithering').value = 'none';
-}
+  $('connectbutton').addEventListener('click', () => void connectButton());
+  document.querySelectorAll('.tabs button').forEach((button) => {
+    button.addEventListener('click', () => switchTab(button.dataset.tab));
+  });
+  bindPomodoro();
+  bindCards();
+  bindImage();
+  bindDebug();
+  updateConnUi();
+  renderPreview();
+};

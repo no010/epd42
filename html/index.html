@@ -1,272 +1,157 @@
 <!doctype html>
-<html lang="en">
-
+<html lang="zh-CN">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>EPD42 墨水屏控制器</title>
-    <style type="text/css">
-        .main {
-            width: 950px;
-            margin: 0 auto;
-            background: #fff;
-            font-size: 1rem;
-            font-weight: 400;
-            line-height: 1.5;
-        }
-
-        h3 {
-            padding-bottom: .3em;
-            border-bottom: 1px solid #CCC;
-            text-align: center;
-        }
-
-        fieldset {
-            border: none;
-            box-shadow: 0 .5rem 0.5rem rgba(0, 0, 0, 0.2);
-            background-color: #f8f9fa;
-            padding: 10px;
-            margin-bottom: 10px;
-        }
-
-        fieldset legend {
-            font-weight: bold;
-            color: rgba(0, 0, 255, 0.6);
-        }
-
-        code {
-            padding: .2em .4em;
-            margin: 0;
-            font-size: 85%;
-            background: #CCC;
-            border-radius: 3px;
-        }
-
-        #status {
-            margin: 10px 0;
-        }
-
-        #log {
-            width: 500px;
-            height: 300px;
-            margin: 0;
-            padding: 5px;
-            background: #DDD;
-            overflow: auto;
-        }
-
-        #log .time {
-            color: #333;
-        }
-
-        #log .action {
-            color: #666;
-        }
-
-        #canvas-box {
-            margin-top: 10px;
-        }
-
-        button {
-            padding: 0.375rem 0.75rem;
-            border: 1px solid #0d6efd;
-            border-radius: 0.375rem;
-        }
-
-        button:disabled {
-            opacity: 0.65;
-        }
-
-        button.primary {
-            color: #fff;
-            background-color: #0d6efd;
-        }
-
-        button.primary:hover {
-            color: #fff;
-            border-color: #0b5ed7;
-            background-color: #0b5ed7;
-        }
-
-        button.secondary {
-            color: #fff;
-            background-color: #6c757d;
-        }
-
-        button.secondary:hover {
-            color: #fff;
-            border-color: #565e64;
-            background-color: #5c636a;
-        }
-
-        input[type=text],
-        input[type=number],
-        select {
-            font-size: 1rem;
-            font-weight: 400;
-            line-height: 1.5;
-            color: #212529;
-            border: 1px solid #dee2e6;
-            border-radius: 0.375rem;
-            padding: .2rem .75rem;
-        }
-
-        input[type=file] {
-            font-size: 1rem;
-            font-weight: 400;
-            line-height: 1.5;
-            color: #212529;
-        }
-
-        input::file-selector-button {
-            font-size: 1rem;
-            font-weight: 400;
-            line-height: 1.5;
-            border: 1px solid #0d6efd;
-            border-radius: 0.375rem;
-        }
-
-        select {
-            padding: .3rem 2.25rem .3rem .75rem;
-        }
-
-        input:focus,
-        select:focus {
-            border: 1px solid #86b7fe;
-            box-shadow: 0 0 4px rgba(0, 120, 215, 0.8);
-            ;
-            outline: 0;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EPD42 墨水屏助手</title>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0.5rem 1rem 2rem;
+      color: #212529;
+    }
+    h1 { font-size: 1.25rem; }
+    canvas#screen {
+      width: 480px;
+      max-width: 100%;
+      border: 1px solid #ccc;
+      background: #fff;
+      image-rendering: pixelated;
+      display: block;
+    }
+    #status { color: #6c757d; min-height: 1.2em; margin: 0.25rem 0; }
+    .conn { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .tabs { display: flex; gap: 0.25rem; margin-top: 0.75rem; border-bottom: 1px solid #dee2e6; }
+    .tabs button {
+      border: 1px solid transparent; border-bottom: none;
+      background: none; padding: 0.4rem 0.9rem; cursor: pointer;
+      border-radius: 0.375rem 0.375rem 0 0; color: #0d6efd;
+    }
+    .tabs button.active {
+      border-color: #dee2e6; background: #fff; color: #212529;
+      margin-bottom: -1px; font-weight: 600;
+    }
+    section.tab { display: none; padding-top: 0.75rem; }
+    section.tab.active { display: block; }
+    .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.4rem 0; }
+    label { white-space: nowrap; }
+    input, select {
+      font-size: 0.95rem; padding: 0.2rem 0.5rem;
+      border: 1px solid #dee2e6; border-radius: 0.375rem;
+    }
+    input[type=number] { width: 5em; }
+    button {
+      padding: 0.35rem 0.8rem; border: 1px solid #0d6efd;
+      border-radius: 0.375rem; background: #fff; color: #0d6efd; cursor: pointer;
+    }
+    button.primary { color: #fff; background: #0d6efd; }
+    button:disabled { opacity: 0.55; cursor: default; }
+    .card-editor { border: 1px solid #dee2e6; border-radius: 0.375rem; padding: 0.5rem 0.75rem; margin: 0.5rem 0; }
+    .card-editor .row { margin: 0.25rem 0; }
+    .card-editor input[type=text] { width: 13em; }
+    .hint { color: #6c757d; font-size: 0.85rem; }
+    fieldset { border: 1px solid #dee2e6; border-radius: 0.375rem; margin: 0.5rem 0; }
+    #log {
+      background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.375rem;
+      height: 9em; overflow-y: auto; padding: 0.4rem 0.6rem;
+      font-family: Consolas, monospace; font-size: 0.8rem; white-space: pre-wrap;
+    }
+    #log .action { color: #666; }
+    #log .time { color: #999; }
+  </style>
 </head>
-
 <body>
-    <div class="main">
-        <h3>4.2寸电子墨水屏蓝牙控制器（nRF51）</h3>
-        <fieldset>
-            <legend>蓝牙</legend>
-            <div style="display: flex; justify-content: space-between;">
-                <div>
-                    <button id="connectbutton" type="button" class="primary" onclick="preConnect()">连接</button>
-                    <button id="reconnectbutton" type="button" class="secondary" onclick="reConnect()">重连</button>
-                </div>
-                <div>
-                    <label for="epddriver">驱动</label>
-                    <select id="epddriver">
-                        <option value="01">EPD_4in2</option>
-                        <option value="04">EPD_4in2_V2</option>
-                        <option value="03">EPD_4in2b_V2</option>
-                    </select>
-                    <label for="epdpins">引脚</label>
-                    <input id="epdpins" type="text" value="">
-                    <button id="setDriverbutton" type="button" class="primary" onclick="setDriver()">确认</button>
-                </div>
-            </div>
-        </fieldset>
+  <h1>EPD42 墨水屏助手（网页版）</h1>
 
-        <fieldset>
-            <legend>传图</legend>
-            <div style="margin-bottom: 10px; display: flex; justify-content: space-between;">
-                <div>
-                    <button id="clearcanvasbutton" type="button" class="secondary"
-                        onclick="clear_canvas()">清除画布</button>
-                    <button id="sendimgbutton" type="button" class="primary" onclick="sendimg()">发送图片</button>
-                </div>
-                <div>
-                    <button id="clearscreenbutton" type="button" class="secondary" onclick="clearscreen()">清除屏幕</button>
-                    <input type="text" id="cmdTXT" value="">
-                    <button id="sendcmdbutton" type="button" class="primary" onclick="sendcmd()">发送命令</button>
-                </div>
-            </div>
-            <div
-                style="font-size: 85%; color: #666; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dotted #AAA;">
-                <b>状态：</b><span id="status"></span>
-            </div>
-            <div id="sendimg">
-                <div style="margin-bottom: 10px; display: flex; justify-content: space-between;">
-                    <div>
-                        <lable for="image_file"></lable>
-                        <input type="file" id="image_file" onchange="update_image()"
-                            accept=".png,.jpg,.bmp,.webp,.jpeg">
-                        <label for="dithering">取模算法</label>
-                        <select id="dithering" title="取模算法" onchange="update_image()">
-                            <optgroup label="黑白">
-                                <option value="none">二值化</option>
-                                <option value="bayer">bayer</option>
-                                <option value="floydsteinberg">floydsteinberg</option>
-                                <option value="Atkinson">Atkinson</option>
-                            </optgroup>
-                            <optgroup label="黑白红多色">
-                                <option value="bwr_floydsteinberg">黑白红floydsteinberg</option>
-                                <option value="bwr_Atkinson">黑白红Atkinson</option>
-                            </optgroup>
-                            <optgroup label="灰色">
-                                <option value="4gray">4 级灰度</option>
-                            </optgroup>
-                        </select>
-                        <label for="threshold">阈值</label>
-                        <input type="number" max="255" min="0" value="125" id="threshold" onchange="update_image()">
-                        <label for="mtusize">MTU</label>
-                        <input type="number" id="mtusize" value="20" min="1" max="255">
-                        <label for="interleavedcount">确认间隔</label>
-                        <input type="number" id="interleavedcount" value="50" min="0" max="500">
-                    </div>
-                    <button type="button" class="secondary" onclick="clearLog()">清空日志</button>
-                </div>
-                <div style="display: flex; justify-content: space-between;">
-                    <canvas id="canvas" width="400" height="300" style="border: black solid 1px;"></canvas>
-                    <div id="log"></div>
-                </div>
-            </div>
-        </fieldset>
-        <fieldset>
-            <legend>提示</legend>
-            <ul>
-                <li><b>驱动选择：</b>黑白屏可尝试 EPD_4in2 / EPD_4in2_V2, 三色屏选择 EPD_4in2b_V2；网页里的驱动 ID 已与上游 v1.5 对齐：<code>01</code>/<code>04</code>/<code>03</code>。</li>
-                <li><b>引脚配置：</b>格式为十六进制，顺序：MOSI/SCLK/CS/DC/ST/BUSY/BS，默认填写 7 个引脚；如果需要兼容上游 v1.5 的配置通知/调试，也可以在末尾额外追加 1 个可选 EN 引脚（没有用到的引脚可配置为 <code>FF</code>）
-                </li>
-                <li>
-                    <b>指令列表（指令和参数全部要使用十六进制）：</b>
-                    <ul>
-                        <li>驱动相关：
-                            <ul>
-                                <li><code>00</code>+<code>引脚配置</code>: 设置引脚映射（见上面引脚配置）</li>
-                                <li><code>01</code>+<code>驱动 ID</code>: 驱动初始化（支持的驱动 ID:
-                                    <code>01</code>/<code>04</code>/<code>03</code>）
-                                </li>
-                                <li><code>02</code>: 清空屏幕（把屏幕刷为白色）</li>
-                                <li><code>03</code>+<code>命令</code>: 发送命令到屏幕（请参考屏幕主控手册）</li>
-                                <li><code>04</code>+<code>数据</code>: 写入数据到屏幕内存（同上）</li>
-                                <li><code>05</code>: 刷新屏幕（显示已写入屏幕内存的数据）</li>
-                                <li><code>06</code>: 屏幕睡眠</li>
-                            </ul>
-                        </li>
-                        <li>系统相关：
-                            <ul>
-                                <li><code>90</code>+<code>配置</code>: 写入配置信息（重启生效，格式参考源码 <code>epd_config_t</code>）</li>
-                                <li><code>91</code>: 系统重启</li>
-                                <li><code>92</code>: 系统睡眠</li>
-                                <li><code>99</code>: 恢复默认设置并重启</li>
-                            </ul>
-                        </li>
-                    </ul>
-                </li>
-                <li><b>灰度：</b>目前仅 <code>EPD_4in2</code> 驱动支持 4 级灰度，其它驱动选择此选项结果未知。</li>
-            </ul>
-            <p>
-                系统睡眠后可通过线圈（NFC/无线充电器）唤醒（需正确配置线圈对应的引脚才有效），否则一旦系统睡眠只有重新上电才能开启蓝牙。如果价签上带有 LED，系统启动时 LED 会闪一下（需正确配置 LED
-                对应的引脚才有效），以便知道系统是否已经被线圈唤醒。
-            </p>
-            <p style="color: #666;">
-                <strong>致谢：</strong>本项目基于 <a href="https://github.com/tsl0922/EPD-nRF51" target="_blank"
-                    rel="noopener">EPD-nRF51</a>
-                分叉而来，感谢原作者的分享和贡献。
-            </p>
-        </fieldset>
+  <div class="conn">
+    <button id="connectbutton" class="primary">连接墨水屏</button>
+    <span id="device-info" class="hint">未连接 — Chrome/Edge 桌面版，Web Bluetooth</span>
+  </div>
+  <div id="status"></div>
+
+  <canvas id="screen" width="400" height="300"></canvas>
+
+  <div class="tabs">
+    <button data-tab="pomodoro" class="active">番茄钟</button>
+    <button data-tab="cards">LLM 用量卡</button>
+    <button data-tab="image">图片</button>
+    <button data-tab="debug">调试</button>
+  </div>
+
+  <section class="tab active" id="tab-pomodoro">
+    <div class="row">
+      <button id="start" class="primary">开始</button>
+      <button id="skip">跳过</button>
+      <button id="reset">重置</button>
+      <button id="wipe">清空</button>
+      <button id="push-pomodoro">推送到墨水屏</button>
+      <label class="hint"><input type="checkbox" id="pomo-autopush" checked /> 操作与阶段变化时自动推送</label>
     </div>
-    <img id="demo-img" style="display: none;" src="images/boringhexEPD.png" />
-    <script type="text/javascript" src="js/dithering.js"></script>
-    <script type="text/javascript" src="js/main.js"></script>
-</body>
+    <div class="row">
+      <label>专注（分）<input type="number" id="work" min="1" value="25" /></label>
+      <label>短休（分）<input type="number" id="short" min="1" value="5" /></label>
+      <label>长休（分）<input type="number" id="long" min="1" value="15" /></label>
+      <label>每 N 个长休<input type="number" id="rounds" min="1" max="12" value="4" /></label>
+      <label class="hint"><input type="checkbox" id="auto-advance" checked /> 自动开始下一阶段</label>
+    </div>
+    <div class="row hint" id="pomo-summary"></div>
+  </section>
 
+  <section class="tab" id="tab-cards">
+    <div class="row">
+      <button id="push-cards" class="primary">推送到墨水屏</button>
+      <button id="cards-demo">恢复示例数据</button>
+      <span class="hint">浏览器无法抓取登录态控制台，数值请手填或从 <code>epd_monitor.py status</code> 抄写。</span>
+    </div>
+    <div id="card-editors"></div>
+  </section>
+
+  <section class="tab" id="tab-image">
+    <div class="row">
+      <input type="file" id="image_file" accept="image/*" />
+    </div>
+    <div class="row">
+      <label>抖动
+        <select id="dithering">
+          <option value="none">无</option>
+          <option value="bayer">Bayer 有序抖动</option>
+          <option value="floydsteinberg">Floyd–Steinberg</option>
+        </select>
+      </label>
+      <label>阈值<input type="number" id="threshold" value="128" min="1" max="255" /></label>
+      <button id="apply-dither">重新处理</button>
+      <button id="push-image" class="primary">推送到墨水屏</button>
+    </div>
+    <div class="row hint">BWR 屏（驱动 3）会自动附带全白红色平面。</div>
+  </section>
+
+  <section class="tab" id="tab-debug">
+    <div class="row">
+      <label>驱动
+        <select id="driver">
+          <option value="1">1 · 4.2in BW (UC8176)</option>
+          <option value="2" selected>2 · 4.2in V2 (BW)</option>
+          <option value="3">3 · 4.2in B V2 (BWR)</option>
+        </select>
+      </label>
+      <button id="set-driver">切换驱动</button>
+      <button id="clearscreen">清屏</button>
+    </div>
+    <div class="row">
+      <label>原始命令（hex）<input type="text" id="cmdTXT" placeholder="如 B5" /></label>
+      <button id="sendcmdbutton">发送</button>
+      <span class="hint">固件仍兼容旧的原始命令，供点亮排查用。</span>
+    </div>
+  </section>
+
+  <pre id="log"></pre>
+
+  <script src="js/epd.js"></script>
+  <script src="js/pomodoro.js"></script>
+  <script src="js/cards.js"></script>
+  <script src="js/dithering.js"></script>
+  <script src="js/main.js"></script>
+</body>
 </html>
