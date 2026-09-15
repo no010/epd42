@@ -55,6 +55,7 @@ enum EPD_CMDS
     EPD_CMD_SET_CONFIG = 0x90,                        /**< set full EPD config */
     EPD_CMD_SYS_RESET  = 0x91,                        /**< MCU reset */
     EPD_CMD_SYS_SLEEP  = 0x92,                        /**< MCU enter sleep mode */
+    EPD_CMD_SET_POWER  = 0x93,                        /**< set the power mode, in : [mode] */
     EPD_CMD_CFG_ERASE  = 0x99,                        /**< Erase config and reset */
 
     /** Packed-bit image streaming.  The host composes the frame, so the
@@ -74,7 +75,7 @@ enum EPD_CMDS
      *                      out : [cmd][status]
      *  EPD_CMD_GET_STATUS    in : [cmd]
      *                      out : [cmd][streaming][plane][received_le16]
-     *                           [plane_bytes_le16][driver]
+     *                           [plane_bytes_le16][driver][power]
      *
      *  The byte count and sum in STREAM_END describe the DECODED plane, so
      *  encoding is invisible to the verification.
@@ -85,7 +86,7 @@ enum EPD_CMDS
     EPD_CMD_STREAM_DATA       = 0xB1,                 /**< append run-length encoded pixels */
     EPD_CMD_STREAM_END        = 0xB2,                 /**< verify the plane, optionally refresh */
     EPD_CMD_STREAM_ABORT      = 0xB3,                 /**< abandon the frame, leaving the panel as is */
-    EPD_CMD_GET_STATUS        = 0xB5,                 /**< report stream progress and active driver */
+    EPD_CMD_GET_STATUS        = 0xB5,                 /**< report stream progress, driver, power mode */
 };
 
 /**< Every supported panel takes a black plane and one extra plane (old data or red). */
@@ -114,6 +115,22 @@ enum EPD_DRIVER_IDS
     EPD_DRIVER_4IN2 = 1,
     EPD_DRIVER_4IN2_V2,
     EPD_DRIVER_4IN2B_V2,
+};
+
+/**< EPD_CMD_SET_POWER modes, persisted in epd_config_t.reserved[1].
+ *
+ *  RESIDENT is the connectable work mode for apps that push periodically
+ *  (pomodoro timers, quota monitors): after a refresh the MCU stays in
+ *  System ON and keeps advertising.  DEEP_SLEEP is the static-display mode:
+ *  a successful refresh is followed by panel sleep and MCU System OFF, so a
+ *  pushed image lasts on the least possible current.  System OFF wakes by
+ *  reset pin or by the configured wakeup_pin sensing an external event
+ *  (NFC field detector, wireless-charge power good, reed switch) - a cold
+ *  boot, so the next frame re-runs the panel Init() regardless. */
+enum EPD_POWER_MODES
+{
+    EPD_POWER_RESIDENT  = 0x00,
+    EPD_POWER_DEEP_SLEEP = 0x01,
 };
 
 /**< EPD protocol model IDs compatible with upstream v1.5. */
@@ -176,6 +193,7 @@ typedef struct
     epd_driver_t             *driver;                 /**< current EPD driver */
     epd_config_t             config;                  /**< EPD config */
     epd_stream_t             stream;                  /**< Packed-bit stream in progress */
+    uint8_t                  system_off_pending;      /**< enter System OFF once idle (deep-sleep mode) */
 } ble_epd_t;
 
 /**@brief Function for preparing sleep mode.
@@ -183,6 +201,21 @@ typedef struct
  * @param[in] p_epd       EPD Service structure.
  */
 void ble_epd_sleep_prepare(ble_epd_t * p_epd);
+
+/**@brief Ask the main loop to enter System OFF at the next idle point.
+ *
+ * @param[in] p_epd       EPD Service structure.
+ */
+void ble_epd_request_system_off(ble_epd_t * p_epd);
+
+/**@brief Take a pending System OFF request, if any.
+ *
+ * @param[in] p_epd       EPD Service structure.
+ *
+ * @retval true   There was a pending request; the caller should enter System OFF.
+ * @retval false  Nothing pending.
+ */
+bool ble_epd_take_system_off_request(ble_epd_t * p_epd);
 
 /**@brief Function for initializing the EPD Service.
  *

@@ -162,7 +162,8 @@ async def cmd_scan(scan_timeout: float) -> None:
 _NEEDS_CONFIG = {"push", "daemon", "status", "render"}
 # These talk to the device or draw synthetic frames: config is welcome (device
 # name, address) but never required.
-_BLE_OR_OPTIONAL_CONFIG = {"scan", "describe", "render", "pattern", "setdriver", "fault", "login"}
+_BLE_OR_OPTIONAL_CONFIG = {"scan", "describe", "render", "pattern", "setdriver",
+                           "setmode", "fault", "login"}
 
 
 def main() -> int:
@@ -173,7 +174,7 @@ def main() -> int:
     parser.add_argument(
         "command",
         choices=["push", "daemon", "status", "render", "scan", "describe",
-                 "pattern", "setdriver", "fault", "login"],
+                 "pattern", "setdriver", "setmode", "fault", "login"],
         help="Command to run",
     )
     parser.add_argument(
@@ -197,6 +198,10 @@ def main() -> int:
                         help="pattern row-marker: which row to draw (0-299)")
     parser.add_argument("--fraction", type=float, default=0.5,
                         help="fault: how much of the plane to send before ENDing early")
+    parser.add_argument("--mode", choices=["resident", "deep"], default="resident",
+                        help="setmode: resident keeps advertising for periodic pushes; "
+                             "deep powers off after each frame (static display, wake "
+                             "by reset or the wakeup pin)")
     parser.add_argument("--provider",
                         choices=["deepseek-web", "kimi-web", "aliyun-web", "bailian"],
                         help="login: which provider to sign in")
@@ -265,6 +270,10 @@ def main() -> int:
             from ble_client import select_driver
 
             asyncio.run(select_driver(args.driver, cfg))
+        elif args.command == "setmode":
+            from ble_client import select_power_mode
+
+            asyncio.run(select_power_mode(args.mode == "deep", cfg))
         elif args.command == "fault":
             from ble_client import fault_test
 

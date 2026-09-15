@@ -14,6 +14,7 @@ EPD_SERVICE_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
 
 CMD_INIT = 0x01             # EPD_CMD_INIT, with a driver id payload
 CMD_SLEEP = 0x06            # EPD_CMD_SLEEP
+CMD_SET_POWER = 0x93        # EPD_CMD_SET_POWER, with a power mode payload
 CMD_STREAM_BEGIN = 0xB0
 CMD_STREAM_DATA = 0xB1
 CMD_STREAM_END = 0xB2
@@ -22,6 +23,12 @@ CMD_GET_STATUS = 0xB5
 
 FLAG_REFRESH = 0x01
 FLAG_SLEEP = 0x02
+
+# EPD_CMD_SET_POWER payloads: resident keeps advertising for apps that push
+# periodically; deep sleep powers the MCU off after every frame and needs a
+# reset or the wakeup pin to come back.
+POWER_RESIDENT = 0x00
+POWER_DEEP_SLEEP = 0x01
 
 STATUS_OK = 0x00
 STATUS_NAMES = {
@@ -42,6 +49,7 @@ STATUS_PLANE = 2
 STATUS_RECEIVED = 3
 STATUS_PLANE_BYTES = 5
 STATUS_DRIVER = 7
+STATUS_POWER = 8          # present on firmware that reports the power mode
 
 
 def describe_status(status: int) -> str:

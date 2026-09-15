@@ -96,8 +96,15 @@ async function pushCanvas(label) {
 function updateConnUi() {
   const connected = !!(gattServer && gattServer.connected);
   $('connectbutton').textContent = connected ? '断开' : '连接墨水屏';
-  ['push-pomodoro', 'push-cards', 'push-image', 'set-driver', 'clearscreen',
-   'sendcmdbutton'].forEach((id) => { $(id).disabled = !connected; });
+  ['push-pomodoro', 'push-cards', 'push-image', 'set-driver', 'set-power',
+   'clearscreen', 'sendcmdbutton'].forEach((id) => { $(id).disabled = !connected; });
+}
+
+function deviceInfoText() {
+  const mode = link.powerMode === POWER_DEEP_SLEEP
+    ? '推完即深睡' : '常驻(可周期推送)';
+  return `${bleDevice.name} · 驱动 ${link.driverId} `
+       + `(${DRIVER_NAMES[link.driverId] || '未知'}) · 平面 ${link.planeBytes}B · ${mode}`;
 }
 
 async function connect() {
@@ -117,10 +124,10 @@ async function connect() {
   link = new EpdLink(char);
   await link.queryStatus();
   $('driver').value = String(link.driverId);
-  $('device-info').textContent =
-    `${bleDevice.name} · 驱动 ${link.driverId} (${DRIVER_NAMES[link.driverId] || '未知'})`
-    + ` · 平面 ${link.planeBytes}B`;
-  addLog(`已连接,驱动 ${link.driverId},平面 ${link.planeBytes} 字节`);
+  $('deep-sleep').checked = link.powerMode === POWER_DEEP_SLEEP;
+  $('device-info').textContent = deviceInfoText();
+  addLog(`已连接,驱动 ${link.driverId},平面 ${link.planeBytes} 字节,`
+         + `电源模式 ${$('deep-sleep').checked ? '深睡' : '常驻'}`);
   updateConnUi();
 }
 
@@ -301,12 +308,19 @@ function bindDebug() {
   $('set-driver').addEventListener('click', async () => {
     try {
       await link.setDriver(Number($('driver').value));
-      $('device-info').textContent =
-        `${bleDevice.name} · 驱动 ${link.driverId} `
-        + `(${DRIVER_NAMES[link.driverId] || '未知'}) · 平面 ${link.planeBytes}B`;
+      $('device-info').textContent = deviceInfoText();
       addLog(`驱动已切换为 ${link.driverId}`);
     } catch (e) {
       addLog(`切换驱动失败: ${e.message}`);
+    }
+  });
+  $('set-power').addEventListener('click', async () => {
+    try {
+      await link.setPowerMode($('deep-sleep').checked);
+      $('device-info').textContent = deviceInfoText();
+      addLog(`电源模式已设为 ${$('deep-sleep').checked ? '深睡(推完即关机)' : '常驻'}`);
+    } catch (e) {
+      addLog(`设置电源模式失败: ${e.message}`);
     }
   });
   $('clearscreen').addEventListener('click', async () => {

@@ -24,6 +24,7 @@
 #include "fstorage.h"
 #include "app_error.h"
 #include "app_timer.h"
+#include "nrf_delay.h"
 #include "EPD_ble.h"
 #include "DEV_Config.h"
 #define NRF_LOG_MODULE_NAME "main"
@@ -457,6 +458,15 @@ int main(void)
 
     for (;;)
     {
+        if (ble_epd_take_system_off_request(&m_epd))
+        {
+            /* Deep-sleep power mode: the frame was pushed and acked; give
+             * the END notification a moment to reach the host, then leave
+             * the radio off for good.  Wake is a reset or the wakeup pin. */
+            nrf_delay_ms(300);
+            ble_epd_sleep_prepare(&m_epd);
+            (void)sd_power_system_off();
+        }
         if (NRF_LOG_PROCESS() == false)
         {
             power_manage();

@@ -428,6 +428,15 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           sd_power_system_off();
           break;
       
+      case EPD_CMD_SET_POWER:
+          if (length >= 2 && p_data[1] <= EPD_POWER_DEEP_SLEEP)
+          {
+              p_epd->config.reserved[1] = p_data[1];
+              err_code = epd_config_save(&p_epd->config);
+              NRF_LOG_INFO("[EPD]: POWER MODE=%d (save %d)\n", p_data[1], err_code);
+          }
+          break;
+
       case EPD_CMD_CFG_ERASE:
           epd_config_clear(&p_epd->config);
           NVIC_SystemReset();
@@ -488,13 +497,15 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           {
               uint16_t plane_bytes = p_epd->driver->plane_bytes();
               uint8_t ack[8] = { EPD_CMD_STREAM_END, EPD_STREAM_STATUS_BAD_COMMAND, 0, 0, 0, 0, 0, 0 };
+              uint8_t status = EPD_STREAM_STATUS_BAD_COMMAND;
+              uint8_t flags = 0;
 
               if (length >= 8 && p_epd->stream.plane != EPD_STREAM_PLANE_IDLE)
               {
                   uint16_t expected_bytes = epd_stream_le16(&p_data[1]);
                   uint32_t expected_sum = epd_stream_le32(&p_data[3]);
-                  uint8_t flags = p_data[7];
-                  uint8_t status = EPD_STREAM_STATUS_OK;
+                  flags = p_data[7];
+                  status = EPD_STREAM_STATUS_OK;
                   uint16_t received = p_epd->stream.received;
                   uint32_t sum = p_epd->stream.sum;
 
@@ -546,6 +557,18 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
                   ack[7] = (uint8_t)(sum >> 24);
               }
               ble_epd_string_send(p_epd, ack, sizeof(ack));
+
+              /* Static-display mode: the frame was the point of the
+               * connection.  The panel sleeps (an e-ink image persists) and
+               * the MCU goes to System OFF once the ack is out - wake is a
+               * reset or the wakeup pin sensing an external event, both of
+               * which cold-boot, so the next frame re-runs Init() regardless. */
+              if (status == EPD_STREAM_STATUS_OK && (flags & EPD_STREAM_FLAG_REFRESH)
+                  && p_epd->config.reserved[1] == EPD_POWER_DEEP_SLEEP)
+              {
+                  p_epd->driver->sleep();
+                  ble_epd_request_system_off(p_epd);
+              }
           }
           break;
 
@@ -564,14 +587,15 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           {
               uint16_t plane_bytes = p_epd->driver->plane_bytes();
               uint16_t received = p_epd->stream.received;
-              uint8_t ack[8] = { EPD_CMD_GET_STATUS,
+              uint8_t ack[9] = { EPD_CMD_GET_STATUS,
                                  (p_epd->stream.plane == EPD_STREAM_PLANE_IDLE) ? 0 : 1,
                                  p_epd->stream.plane,
                                  (uint8_t)(received & 0xFF),
                                  (uint8_t)(received >> 8),
                                  (uint8_t)(plane_bytes & 0xFF),
                                  (uint8_t)(plane_bytes >> 8),
-                                 p_epd->driver->id };
+                                 p_epd->driver->id,
+                                 p_epd->config.reserved[1] };
               ble_epd_string_send(p_epd, ack, sizeof(ack));
           }
           break;
@@ -751,11 +775,30 @@ static void epd_config_init(ble_epd_t * p_epd)
         epd_config_save(&p_epd->config);
     }
 
+    /* reserved[1] holds the power mode; a blank flash page (0xFF) or any
+     * other value reads as the resident work mode. */
+    if (p_epd->config.reserved[1] != EPD_POWER_DEEP_SLEEP)
+    {
+        p_epd->config.reserved[1] = EPD_POWER_RESIDENT;
+    }
+
     p_epd->driver = epd_driver_get(driver_id);
     if (p_epd->driver == NULL)
     {
         p_epd->driver = &epd_drivers[0];
     }
+}
+
+void ble_epd_request_system_off(ble_epd_t * p_epd)
+{
+    p_epd->system_off_pending = 1;
+}
+
+bool ble_epd_take_system_off_request(ble_epd_t * p_epd)
+{
+    bool pending = p_epd->system_off_pending != 0;
+    p_epd->system_off_pending = 0;
+    return pending;
 }
 
 void ble_epd_sleep_prepare(ble_epd_t * p_epd)

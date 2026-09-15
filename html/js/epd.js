@@ -23,6 +23,7 @@ const CMD_INIT = 0x01;
 const CMD_CLEAR = 0x02;
 const CMD_SEND_CMD = 0x03;
 const CMD_SLEEP = 0x06;
+const CMD_SET_POWER = 0x93;
 const CMD_STREAM_BEGIN = 0xB0;
 const CMD_STREAM_DATA = 0xB1;
 const CMD_STREAM_END = 0xB2;
@@ -30,6 +31,9 @@ const CMD_STREAM_ABORT = 0xB3;
 const CMD_GET_STATUS = 0xB5;
 
 const FLAG_REFRESH = 0x01;
+
+const POWER_RESIDENT = 0x00;    // stays advertising for periodic-push apps
+const POWER_DEEP_SLEEP = 0x01;  // MCU off after each frame; wake = reset/wakeup pin
 
 const STATUS_OK = 0x00;
 const STATUS_NAMES = {
@@ -236,11 +240,18 @@ class EpdLink {
     this.streaming = packet[1];
     this.planeBytes = packet[5] | (packet[6] << 8);
     this.driverId = packet[7];
+    this.powerMode = packet.length > 8 ? packet[8] : POWER_RESIDENT;
     return packet;
   }
 
   async setDriver(driverId) {
     await this._write(Uint8Array.of(CMD_INIT, driverId));
+    await this.queryStatus();
+  }
+
+  async setPowerMode(deep) {
+    await this._write(Uint8Array.of(CMD_SET_POWER,
+                                    deep ? POWER_DEEP_SLEEP : POWER_RESIDENT));
     await this.queryStatus();
   }
 
