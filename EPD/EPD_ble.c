@@ -16,6 +16,7 @@
 #include "nrf_delay.h"
 #include "nrf_gpio.h"
 #include "nrf_soc.h"
+#include "app_timer.h"
 #include "fstorage.h"
 #include "EPD_4in2.h"
 #include "EPD_4in2_V2.h"
@@ -179,6 +180,24 @@ static uint32_t epd_config_save(epd_config_t *cfg)
 #define EPD_STREAM_REFRESH_TIMEOUT_MS  20000
 #define EPD_STREAM_PLANE_IDLE          0xFF
 
+/** Deep-sleep countdown: must match APP_TIMER_PRESCALER in main.c (RTC1 / 1). */
+#define EPD_TIMER_PRESCALER            0
+
+APP_TIMER_DEF(m_system_off_timer);
+
+/**@brief Effective disconnect grace: a blank flash page reads as the default. */
+static uint8_t epd_sleep_grace_s(const ble_epd_t * p_epd)
+{
+    uint8_t seconds = p_epd->config.reserved[2];
+    return (seconds == 0xFF) ? EPD_SLEEP_GRACE_DEFAULT_S : seconds;
+}
+
+/**@brief The disconnect grace elapsed; hand the decision to the main loop. */
+static void system_off_timer_handler(void * p_context)
+{
+    ble_epd_request_system_off((ble_epd_t *)p_context);
+}
+
 /** PackBits decoder states. */
 enum EPD_RLE_MODES
 {
@@ -296,6 +315,9 @@ static void on_connect(ble_epd_t * p_epd, ble_evt_t * p_ble_evt)
     p_epd->conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
     epd_stream_reset(p_epd);
     DEV_Module_Init();
+    /* A reconnection inside the grace window is another push coming; the
+     * countdown restarts when that link goes away. */
+    app_timer_stop(m_system_off_timer);
 }
 
 
@@ -314,6 +336,18 @@ static void on_disconnect(ble_epd_t * p_epd, ble_evt_t * p_ble_evt)
     p_epd->conn_handle = BLE_CONN_HANDLE_INVALID;
     epd_stream_reset(p_epd);
     DEV_Module_Exit();
+
+    /* Deep-sleep mode: a frame was pushed, so once the link has been idle
+     * for the grace period there is nothing left to wait for. */
+    if (p_epd->system_off_armed)
+    {
+        uint32_t grace_ms = epd_sleep_grace_s(p_epd) * 1000UL;
+        uint32_t err_code = app_timer_start(m_system_off_timer,
+                                            APP_TIMER_TICKS(grace_ms,
+                                                            EPD_TIMER_PRESCALER),
+                                            p_epd);
+        APP_ERROR_CHECK(err_code);
+    }
 }
 
 static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t length)
@@ -432,8 +466,19 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           if (length >= 2 && p_data[1] <= EPD_POWER_DEEP_SLEEP)
           {
               p_epd->config.reserved[1] = p_data[1];
+              if (length >= 3)
+              {
+                  p_epd->config.reserved[2] = p_data[2];   /* disconnect grace, s */
+              }
               err_code = epd_config_save(&p_epd->config);
-              NRF_LOG_INFO("[EPD]: POWER MODE=%d (save %d)\n", p_data[1], err_code);
+              NRF_LOG_INFO("[EPD]: POWER MODE=%d GRACE=%d (save %d)\n",
+                           p_epd->config.reserved[1], epd_sleep_grace_s(p_epd), err_code);
+          }
+          if (length >= 2 && p_data[1] == EPD_POWER_RESIDENT)
+          {
+              p_epd->system_off_armed = 0;
+              p_epd->system_off_pending = 0;
+              app_timer_stop(m_system_off_timer);
           }
           break;
 
@@ -559,15 +604,15 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
               ble_epd_string_send(p_epd, ack, sizeof(ack));
 
               /* Static-display mode: the frame was the point of the
-               * connection.  The panel sleeps (an e-ink image persists) and
-               * the MCU goes to System OFF once the ack is out - wake is a
-               * reset or the wakeup pin sensing an external event, both of
-               * which cold-boot, so the next frame re-runs Init() regardless. */
+               * connection, but the link itself may carry another push, so
+               * only arm here - the System OFF decision comes when the link
+               * has been down for the configured grace period. */
               if (status == EPD_STREAM_STATUS_OK && (flags & EPD_STREAM_FLAG_REFRESH)
                   && p_epd->config.reserved[1] == EPD_POWER_DEEP_SLEEP)
               {
                   p_epd->driver->sleep();
-                  ble_epd_request_system_off(p_epd);
+                  p_epd->system_off_armed = 1;
+                  app_timer_stop(m_system_off_timer);
               }
           }
           break;
@@ -587,7 +632,7 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
           {
               uint16_t plane_bytes = p_epd->driver->plane_bytes();
               uint16_t received = p_epd->stream.received;
-              uint8_t ack[9] = { EPD_CMD_GET_STATUS,
+              uint8_t ack[10] = { EPD_CMD_GET_STATUS,
                                  (p_epd->stream.plane == EPD_STREAM_PLANE_IDLE) ? 0 : 1,
                                  p_epd->stream.plane,
                                  (uint8_t)(received & 0xFF),
@@ -595,7 +640,8 @@ static void epd_service_process(ble_epd_t * p_epd, uint8_t * p_data, uint16_t le
                                  (uint8_t)(plane_bytes & 0xFF),
                                  (uint8_t)(plane_bytes >> 8),
                                  p_epd->driver->id,
-                                 p_epd->config.reserved[1] };
+                                 p_epd->config.reserved[1],
+                                 epd_sleep_grace_s(p_epd) };
               ble_epd_string_send(p_epd, ack, sizeof(ack));
           }
           break;
@@ -776,10 +822,15 @@ static void epd_config_init(ble_epd_t * p_epd)
     }
 
     /* reserved[1] holds the power mode; a blank flash page (0xFF) or any
-     * other value reads as the resident work mode. */
+     * other value reads as the resident work mode.  reserved[2] holds the
+     * disconnect grace in seconds. */
     if (p_epd->config.reserved[1] != EPD_POWER_DEEP_SLEEP)
     {
         p_epd->config.reserved[1] = EPD_POWER_RESIDENT;
+    }
+    if (p_epd->config.reserved[2] == 0xFF)
+    {
+        p_epd->config.reserved[2] = EPD_SLEEP_GRACE_DEFAULT_S;
     }
 
     p_epd->driver = epd_driver_get(driver_id);
@@ -825,9 +876,14 @@ uint32_t ble_epd_init(ble_epd_t * p_epd)
     // Initialize the service structure.
     p_epd->conn_handle             = BLE_CONN_HANDLE_INVALID;
     p_epd->is_notification_enabled = false;
+    p_epd->system_off_armed        = 0;
+    p_epd->system_off_pending      = 0;
     epd_stream_reset(p_epd);
-    
+
     uint32_t                err_code;
+    err_code = app_timer_create(&m_system_off_timer, APP_TIMER_MODE_SINGLE_SHOT,
+                                system_off_timer_handler);
+    APP_ERROR_CHECK(err_code);
     err_code = epd_config_load(&p_epd->config);
     if (err_code == NRF_SUCCESS)
     {

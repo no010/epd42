@@ -50,6 +50,7 @@ STATUS_RECEIVED = 3
 STATUS_PLANE_BYTES = 5
 STATUS_DRIVER = 7
 STATUS_POWER = 8          # present on firmware that reports the power mode
+STATUS_GRACE = 9          # deep-sleep disconnect grace in seconds (same firmware+)
 
 
 def describe_status(status: int) -> str:

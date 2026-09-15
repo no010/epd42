@@ -86,12 +86,17 @@ class EpdLink:
         self.power_mode = (packet[protocol.STATUS_POWER]
                            if len(packet) > protocol.STATUS_POWER
                            else protocol.POWER_RESIDENT)
+        self.sleep_grace_s = (packet[protocol.STATUS_GRACE]
+                              if len(packet) > protocol.STATUS_GRACE else None)
         logger.info("device: driver=%d (%s), plane=%d bytes, plane in progress=%d, "
-                    "power mode=%s",
+                    "power mode=%s%s",
                     self.driver_id, render.DRIVER_NAMES.get(self.driver_id, "unknown"),
                     self.plane_bytes, self.streaming,
                     "deep sleep" if self.power_mode == protocol.POWER_DEEP_SLEEP
-                    else "resident")
+                    else "resident",
+                    f" (sleeps {self.sleep_grace_s}s after disconnect)"
+                    if self.sleep_grace_s is not None
+                    and self.power_mode == protocol.POWER_DEEP_SLEEP else "")
 
     async def stream_plane(self, index: int, raw: bytes, *, last: bool,
                            fast: bool = False) -> None:
@@ -150,15 +155,19 @@ class EpdLink:
         await self._write(bytes([protocol.CMD_INIT, driver_id]))
         await self.query_status()
 
-    async def set_power_mode(self, deep: bool) -> None:
+    async def set_power_mode(self, deep: bool, grace_s: int | None = None) -> None:
         """Choose how the device behaves after a frame.
 
-        Deep sleep powers the MCU off once the ack is out (static display,
-        wake by reset or the wakeup pin); resident keeps advertising for
-        apps that push periodically.
+        Deep sleep arms a countdown once the link goes down: after ``grace_s``
+        seconds of no connection the panel sleeps and the MCU enters System
+        OFF (static display, wake by reset or the wakeup pin).  Resident
+        keeps advertising for apps that push periodically.
         """
-        mode = protocol.POWER_DEEP_SLEEP if deep else protocol.POWER_RESIDENT
-        await self._write(bytes([protocol.CMD_SET_POWER, mode]))
+        payload = [protocol.CMD_SET_POWER,
+                   protocol.POWER_DEEP_SLEEP if deep else protocol.POWER_RESIDENT]
+        if grace_s is not None:
+            payload.append(max(0, min(int(grace_s), 255)))
+        await self._write(bytes(payload))
         await self.query_status()
 
     async def abort(self) -> None:
@@ -275,13 +284,17 @@ async def select_driver(driver_id: int, cfg: dict) -> None:
         print(f"driver is now {link.driver_id}: {render.DRIVER_NAMES.get(link.driver_id)}")
 
 
-async def select_power_mode(deep: bool, cfg: dict) -> None:
+async def select_power_mode(deep: bool, cfg: dict, grace_s: int | None = None) -> None:
     """Switch between the resident work mode and static-display deep sleep."""
     async with epd_session(cfg) as link:
-        await link.set_power_mode(deep)
-        print("power mode is now: "
-              + ("deep sleep after frame (wake by reset or wakeup pin)" if deep
-                 else "resident (stays advertising)"))
+        await link.set_power_mode(deep, grace_s)
+        if deep:
+            grace = link.sleep_grace_s
+            print("power mode is now: deep sleep "
+                  f"(System OFF {grace}s after the link goes down; wake by reset "
+                  "or wakeup pin)")
+        else:
+            print("power mode is now: resident (stays advertising)")
 
 
 async def fault_test(cfg: dict, fraction: float = 0.5) -> int:

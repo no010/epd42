@@ -200,8 +200,13 @@ def main() -> int:
                         help="fault: how much of the plane to send before ENDing early")
     parser.add_argument("--mode", choices=["resident", "deep"], default="resident",
                         help="setmode: resident keeps advertising for periodic pushes; "
-                             "deep powers off after each frame (static display, wake "
-                             "by reset or the wakeup pin)")
+                             "deep arms a countdown - once the link has been down for "
+                             "--sleep-after seconds the device powers off (static "
+                             "display, wake by reset or the wakeup pin)")
+    parser.add_argument("--sleep-after", type=int, default=None, metavar="SECONDS",
+                        help="setmode --mode deep: disconnected-for seconds before "
+                             "System OFF (0-255, default keeps the current value; "
+                             "a fresh device uses 60)")
     parser.add_argument("--provider",
                         choices=["deepseek-web", "kimi-web", "aliyun-web", "bailian"],
                         help="login: which provider to sign in")
@@ -273,7 +278,8 @@ def main() -> int:
         elif args.command == "setmode":
             from ble_client import select_power_mode
 
-            asyncio.run(select_power_mode(args.mode == "deep", cfg))
+            grace = args.sleep_after if args.mode == "deep" else None
+            asyncio.run(select_power_mode(args.mode == "deep", cfg, grace))
         elif args.command == "fault":
             from ble_client import fault_test
 

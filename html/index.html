@@ -140,11 +140,12 @@
       <button id="clearscreen">清屏</button>
     </div>
     <div class="row">
-      <label class="check"><input type="checkbox" id="deep-sleep" /> 推完即深睡</label>
+      <label class="check"><input type="checkbox" id="deep-sleep" /> 深睡模式</label>
+      <label>断连后关机延时（秒）<input type="number" id="sleep-grace" min="0" max="255" value="60" /></label>
       <button id="set-power">应用电源模式</button>
-      <span class="hint">深睡 = 推送成功后 MCU 进入 System OFF,图像常显、续航最长;
-        需复位键或 wakeup 脚(可接 NFC 检波/无线充上电信号)唤醒。不勾 = 常驻模式,
-        适合番茄钟等周期推送应用。</span>
+      <span class="hint">深睡 = 推送成功后布防,蓝牙<b>断连且空闲达到延时</b>才 System OFF
+        (窗口期内可再连推下一张);图像常显、续航最长,需复位键或 wakeup 脚
+        (可接 NFC 检波/无线充上电信号)唤醒。不勾 = 常驻模式,适合番茄钟等周期推送应用。</span>
     </div>
     <div class="row">
       <label>原始命令（hex）<input type="text" id="cmdTXT" placeholder="如 B5" /></label>

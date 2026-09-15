@@ -183,7 +183,7 @@ def test_client_protocol() -> None:
             if cmd == protocol.CMD_GET_STATUS:
                 ack = (bytes([cmd, 0, 0xFF, 0, 0])
                        + self.plane_bytes.to_bytes(2, "little")
-                       + bytes([self.driver_id, protocol.POWER_RESIDENT]))
+                       + bytes([self.driver_id, protocol.POWER_RESIDENT, 60]))
                 self.acks.put_nowait(ack)
                 return
             elif cmd == protocol.CMD_STREAM_BEGIN:

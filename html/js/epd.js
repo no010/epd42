@@ -33,7 +33,8 @@ const CMD_GET_STATUS = 0xB5;
 const FLAG_REFRESH = 0x01;
 
 const POWER_RESIDENT = 0x00;    // stays advertising for periodic-push apps
-const POWER_DEEP_SLEEP = 0x01;  // MCU off after each frame; wake = reset/wakeup pin
+const POWER_DEEP_SLEEP = 0x01;  // sleeps after the link is down for the grace period
+const SLEEP_GRACE_DEFAULT_S = 60;
 
 const STATUS_OK = 0x00;
 const STATUS_NAMES = {
@@ -241,6 +242,7 @@ class EpdLink {
     this.planeBytes = packet[5] | (packet[6] << 8);
     this.driverId = packet[7];
     this.powerMode = packet.length > 8 ? packet[8] : POWER_RESIDENT;
+    this.sleepGraceS = packet.length > 9 ? packet[9] : null;
     return packet;
   }
 
@@ -249,9 +251,12 @@ class EpdLink {
     await this.queryStatus();
   }
 
-  async setPowerMode(deep) {
-    await this._write(Uint8Array.of(CMD_SET_POWER,
-                                    deep ? POWER_DEEP_SLEEP : POWER_RESIDENT));
+  async setPowerMode(deep, graceSeconds) {
+    const payload = [CMD_SET_POWER, deep ? POWER_DEEP_SLEEP : POWER_RESIDENT];
+    if (graceSeconds !== undefined && graceSeconds !== null) {
+      payload.push(Math.max(0, Math.min(Math.floor(graceSeconds), 255)));
+    }
+    await this._write(Uint8Array.from(payload));
     await this.queryStatus();
   }
 

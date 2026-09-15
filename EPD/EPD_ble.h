@@ -55,7 +55,7 @@ enum EPD_CMDS
     EPD_CMD_SET_CONFIG = 0x90,                        /**< set full EPD config */
     EPD_CMD_SYS_RESET  = 0x91,                        /**< MCU reset */
     EPD_CMD_SYS_SLEEP  = 0x92,                        /**< MCU enter sleep mode */
-    EPD_CMD_SET_POWER  = 0x93,                        /**< set the power mode, in : [mode] */
+    EPD_CMD_SET_POWER  = 0x93,                        /**< set power mode, in : [mode][grace_s?] */
     EPD_CMD_CFG_ERASE  = 0x99,                        /**< Erase config and reset */
 
     /** Packed-bit image streaming.  The host composes the frame, so the
@@ -75,7 +75,7 @@ enum EPD_CMDS
      *                      out : [cmd][status]
      *  EPD_CMD_GET_STATUS    in : [cmd]
      *                      out : [cmd][streaming][plane][received_le16]
-     *                           [plane_bytes_le16][driver][power]
+     *                           [plane_bytes_le16][driver][power][grace_s]
      *
      *  The byte count and sum in STREAM_END describe the DECODED plane, so
      *  encoding is invisible to the verification.
@@ -117,21 +117,26 @@ enum EPD_DRIVER_IDS
     EPD_DRIVER_4IN2B_V2,
 };
 
-/**< EPD_CMD_SET_POWER modes, persisted in epd_config_t.reserved[1].
+/**< EPD_CMD_SET_POWER modes, persisted in epd_config_t.reserved[1..2].
  *
  *  RESIDENT is the connectable work mode for apps that push periodically
  *  (pomodoro timers, quota monitors): after a refresh the MCU stays in
  *  System ON and keeps advertising.  DEEP_SLEEP is the static-display mode:
- *  a successful refresh is followed by panel sleep and MCU System OFF, so a
- *  pushed image lasts on the least possible current.  System OFF wakes by
- *  reset pin or by the configured wakeup_pin sensing an external event
- *  (NFC field detector, wireless-charge power good, reed switch) - a cold
- *  boot, so the next frame re-runs the panel Init() regardless. */
+ *  a verified refresh arms the countdown, and once the link has been down
+ *  for the configured grace period (reserved[2], seconds, default 60) the
+ *  panel sleeps - the image remains - and the MCU enters System OFF.  The
+ *  grace window exists so the next frame can be pushed over the same
+ *  session without waking the board.  System OFF wakes by reset pin or by
+ *  the configured wakeup_pin sensing an external event (NFC field detector,
+ *  wireless-charge power good, reed switch) - a cold boot, so the next
+ *  frame re-runs the panel Init() regardless. */
 enum EPD_POWER_MODES
 {
     EPD_POWER_RESIDENT  = 0x00,
     EPD_POWER_DEEP_SLEEP = 0x01,
 };
+
+#define EPD_SLEEP_GRACE_DEFAULT_S  60    /**< disconnected-for seconds before System OFF */
 
 /**< EPD protocol model IDs compatible with upstream v1.5. */
 enum EPD_PROTOCOL_MODEL_IDS
@@ -193,6 +198,7 @@ typedef struct
     epd_driver_t             *driver;                 /**< current EPD driver */
     epd_config_t             config;                  /**< EPD config */
     epd_stream_t             stream;                  /**< Packed-bit stream in progress */
+    uint8_t                  system_off_armed;        /**< a frame was pushed; sleep once link is idle */
     uint8_t                  system_off_pending;      /**< enter System OFF once idle (deep-sleep mode) */
 } ble_epd_t;
 

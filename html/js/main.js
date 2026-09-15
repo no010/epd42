@@ -102,7 +102,8 @@ function updateConnUi() {
 
 function deviceInfoText() {
   const mode = link.powerMode === POWER_DEEP_SLEEP
-    ? '推完即深睡' : '常驻(可周期推送)';
+    ? `深睡(断连 ${link.sleepGraceS ?? SLEEP_GRACE_DEFAULT_S}s 后关机)`
+    : '常驻(可周期推送)';
   return `${bleDevice.name} · 驱动 ${link.driverId} `
        + `(${DRIVER_NAMES[link.driverId] || '未知'}) · 平面 ${link.planeBytes}B · ${mode}`;
 }
@@ -125,6 +126,7 @@ async function connect() {
   await link.queryStatus();
   $('driver').value = String(link.driverId);
   $('deep-sleep').checked = link.powerMode === POWER_DEEP_SLEEP;
+  $('sleep-grace').value = link.sleepGraceS ?? SLEEP_GRACE_DEFAULT_S;
   $('device-info').textContent = deviceInfoText();
   addLog(`已连接,驱动 ${link.driverId},平面 ${link.planeBytes} 字节,`
          + `电源模式 ${$('deep-sleep').checked ? '深睡' : '常驻'}`);
@@ -316,9 +318,12 @@ function bindDebug() {
   });
   $('set-power').addEventListener('click', async () => {
     try {
-      await link.setPowerMode($('deep-sleep').checked);
+      const grace = Number($('sleep-grace').value);
+      await link.setPowerMode($('deep-sleep').checked,
+                              Number.isFinite(grace) ? grace : undefined);
       $('device-info').textContent = deviceInfoText();
-      addLog(`电源模式已设为 ${$('deep-sleep').checked ? '深睡(推完即关机)' : '常驻'}`);
+      addLog(`电源模式已设为 ${$('deep-sleep').checked
+        ? `深睡(断连 ${grace}s 后关机)` : '常驻'}`);
     } catch (e) {
       addLog(`设置电源模式失败: ${e.message}`);
     }
