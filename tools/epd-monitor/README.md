@@ -51,6 +51,7 @@ uv run python epd_monitor.py daemon
 | `describe` | Print the device's GATT services and characteristics |
 | `pattern`  | Stream a synthetic test image (`white`, `black`, `corner-dots`, `row-marker`, `left-half`, `grid`) |
 | `setdriver`| Point the device at the panel actually attached (`--driver 1|2|3`) |
+| `setmode`  | Choose the power mode (`--mode resident` or `--mode deep [--sleep-after SECONDS]`) |
 | `fault`    | Send half a plane and END early: the device must refuse it, then recover |
 | `login`    | Sign in a provider: `deepseek-web`/`kimi-web`/`aliyun-web` keep a browser profile, `bailian` only needs one loopback callback |
 
@@ -111,9 +112,16 @@ needs filling the same way.
 |                        |        | device → host (notify) | `[status, received_le16, sum_le32]` |
 | `EPD_CMD_STREAM_ABORT` | `0xB3` | host → device | — |
 | `EPD_CMD_GET_STATUS`   | `0xB5` | host → device | — |
-|                        |        | device → host (notify) | `[streaming, plane, received_le16, plane_bytes_le16, driver]` |
+|                        |        | device → host (notify) | `[streaming, plane, received_le16, plane_bytes_le16, driver, power, grace_s]` |
 
-`flags`: `0x01` refresh, `0x02` put the panel to sleep. `status`: see
+`flags`: `0x01` refresh, `0x02` put the panel to sleep. **The hosts in this repo
+send only `0x01`** — putting a UC8176 into its deep-sleep command (0x07 0xA5)
+between frames made later refreshes no-ops on hardware, so the panel rests in
+hardware reset instead (the firmware holds RST low on disconnect, and the next
+connection's rising edge wakes it). `0x02` remains available for explicit use.
+`power`: `0x00` resident, `0x01` deep sleep (see [Power and reachability](#power-and-reachability)).
+`grace_s`: the deep-sleep disconnect grace in seconds (firmware that predates
+the power-mode feature simply sends a shorter status reply). `status`: see
 `EPD_STREAM_STATUS_*` in `EPD/EPD_ble.h`. The byte count and sum in
 `STREAM_END` describe the **decoded** plane, so encoding is invisible to the
 check.
@@ -285,11 +293,26 @@ The composed frame has **3 item slots**. If more than 3 provider entries are con
 
 The device advertises fast for 30 s after boot or disconnect, then falls back to
 1.28 s slow advertising and stays connectable indefinitely, so a push can happen
-at any time. It never enters System OFF on its own: an nRF51 in System OFF wakes
-only on GPIO SENSE, NFC or reset — never on a timer — and this board runs the
-synthetic LF clock, which stops while the chip idles. Send `EPD_CMD_SYS_SLEEP`
-(`0x92`) if you want the extreme-low-power mode, and accept that waking it then
-needs the wakeup pin or an NFC field.
+at any time. Two persisted power modes (set with `epd_monitor.py setmode`, saved
+in the device's config page) decide what happens after a frame:
+
+- **resident** (default): the MCU stays in System ON and keeps advertising —
+  the mode for pomodoro timers and quota monitors that push on a schedule.
+- **deep sleep**: a verified push only *arms* the countdown. Once the link has
+  been **disconnected and idle for the grace period** (`--sleep-after`, 0–255 s,
+  default 60), the panel sleeps (the e-ink image persists) and the MCU enters
+  System OFF. Reconnecting inside the window cancels the countdown, so several
+  frames can ride one connection; waking afterwards takes the reset pin or the
+  configured `wakeup` pin (GPIO SENSE) — wire an NFC field detector, a
+  wireless-charge power-good line or a reed switch to it. The wake is a cold
+  boot, so the next frame re-runs the panel `Init()` regardless — which also
+  sidesteps the panel's deep-sleep-command quirk described under `flags` above.
+
+An nRF51 in System OFF never wakes on a timer (this board runs the synthetic
+LF clock, which stops while the chip idles) — that is exactly why the
+countdown lives in the still-running System ON state and only the final
+power-off is deferred to it. `EPD_CMD_SYS_SLEEP` (`0x92`) still forces System
+OFF immediately if you want it by hand.
 
 ## Automating with cron / launchd
 
@@ -310,6 +333,7 @@ needs the wakeup pin or an NFC field.
 | `STREAM_END: verify failed` | Packets were lost. Lower the connection interval, or stop using `fast_write` |
 | `panel busy timeout` | The panel never released BUSY: check the wiring and that `busy_pin` is mapped correctly |
 | Image is inverted or in the wrong colour | Plane order/polarity: see the table above and `test_frame.py` |
+| Device vanishes (not advertising) shortly after a push | Deep-sleep mode is active: it powered off once the link was idle past the grace period. Wake with the reset pin or the `wakeup` pin, and switch back with `setmode --mode resident` |
 | `[Zhipu] HTTP 401` | Use the full API key string from `open.bigmodel.cn`, not just the prefix |
 | `[OpenAI] Permission denied` | Use an Admin key with `api.usage.read` scope |
 | `[Kimi] status: false` | Balance exhausted or API key invalid |
