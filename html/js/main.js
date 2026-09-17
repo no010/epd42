@@ -175,12 +175,14 @@ let timer;
 
 function bindPomodoro() {
   timer = new PomodoroTimer((state, phaseChanged) => {
+    $('start').textContent = state.running ? '暂停' : '开始';
     if (activeTab === 'pomodoro') renderPreview();
     if (phaseChanged && link && $('pomo-autopush').checked) {
       void pushCanvas('番茄钟');
     }
   });
 
+  $('start').textContent = timer.state.running ? '暂停' : '开始';
   $('start').addEventListener('click', () => timer.startPause());
   $('skip').addEventListener('click', () => timer.skip());
   $('reset').addEventListener('click', () => timer.reset());
