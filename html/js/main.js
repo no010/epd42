@@ -97,6 +97,7 @@ function updateConnUi() {
   const connected = !!(gattServer && gattServer.connected);
   $('connectbutton').textContent = connected ? '断开' : '连接墨水屏';
   ['push-pomodoro', 'push-cards', 'push-image', 'set-driver', 'set-power',
+   'query-status', 'panel-sleep', 'mcu-reset', 'system-off', 'cfg-erase',
    'clearscreen', 'sendcmdbutton'].forEach((id) => { $(id).disabled = !connected; });
 }
 
@@ -301,6 +302,7 @@ function bindImage() {
 /* ── debug tab ────────────────────────────────────────────────────────── */
 
 function hex2bytes(hex) {
+  hex = hex.replace(/\s+/g, '');
   const bytes = [];
   for (let c = 0; c < hex.length; c += 2) {
     bytes.push(parseInt(hex.substr(c, 2), 16));
@@ -335,6 +337,39 @@ function bindDebug() {
       await link.clear();
       addLog('已发送清屏命令');
     }
+  });
+  $('query-status').addEventListener('click', async () => {
+    try {
+      await link.queryStatus();
+      $('deep-sleep').checked = link.powerMode === POWER_DEEP_SLEEP;
+      $('sleep-grace').value = link.sleepGraceS ?? SLEEP_GRACE_DEFAULT_S;
+      $('device-info').textContent = deviceInfoText();
+      addLog(`状态: 驱动 ${link.driverId},平面 ${link.planeBytes}B,`
+             + `传输中 ${link.streaming},电源模式 ${link.powerMode},`
+             + `宽限 ${link.sleepGraceS ?? '-'}s`);
+    } catch (e) {
+      addLog(`状态查询失败: ${e.message}`);
+    }
+  });
+  $('panel-sleep').addEventListener('click', async () => {
+    if (!confirm('让面板进入深睡?\n之后需要 MCU 复位(或重新连接并推一帧)才能恢复刷新。')) return;
+    await link.sendRaw(Uint8Array.of(CMD_SLEEP));
+    addLog('已发送面板休眠命令 (0x06)');
+  });
+  $('mcu-reset').addEventListener('click', async () => {
+    if (!confirm('软复位 MCU?\n连接会断开,设备重新广播,配置与电源模式保留。')) return;
+    await link.sendRaw(Uint8Array.of(0x91));
+    addLog('已发送 MCU 复位命令 (0x91)');
+  });
+  $('system-off').addEventListener('click', async () => {
+    if (!confirm('立即进入 System OFF?\n设备断电,只能靠复位键或 wakeup 脚唤醒。')) return;
+    await link.sendRaw(Uint8Array.of(0x92));
+    addLog('已发送 System OFF 命令 (0x92)');
+  });
+  $('cfg-erase').addEventListener('click', async () => {
+    if (!confirm('擦除配置页?\n引脚映射、驱动、电源模式全部恢复出厂,设备随后自动复位。')) return;
+    await link.sendRaw(Uint8Array.of(0x99));
+    addLog('已发送擦除配置命令 (0x99)');
   });
   $('sendcmdbutton').addEventListener('click', async () => {
     const text = $('cmdTXT').value.trim();

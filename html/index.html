@@ -53,6 +53,17 @@
     .card-editor input[type=text] { width: 13em; }
     .hint { color: #6c757d; font-size: 0.85rem; }
     fieldset { border: 1px solid #dee2e6; border-radius: 0.375rem; margin: 0.5rem 0; }
+    details { margin-top: 0.6rem; }
+    details summary { cursor: pointer; color: #0d6efd; font-size: 0.95rem; }
+    table.cmd-ref {
+      border-collapse: collapse; width: 100%; margin-top: 0.5rem; font-size: 0.85rem;
+    }
+    table.cmd-ref th, table.cmd-ref td {
+      border: 1px solid #dee2e6; padding: 0.25rem 0.5rem; text-align: left;
+      vertical-align: top;
+    }
+    table.cmd-ref th { background: #f8f9fa; }
+    table.cmd-ref td:nth-child(2) { font-family: Consolas, monospace; }
     #log {
       background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 0.375rem;
       height: 9em; overflow-y: auto; padding: 0.4rem 0.6rem;
@@ -138,6 +149,7 @@
       </label>
       <button id="set-driver">切换驱动</button>
       <button id="clearscreen">清屏</button>
+      <button id="query-status">查询状态</button>
     </div>
     <div class="row">
       <label class="check"><input type="checkbox" id="deep-sleep" /> 深睡模式</label>
@@ -148,10 +160,46 @@
         (可接 NFC 检波/无线充上电信号)唤醒。不勾 = 常驻模式,适合番茄钟等周期推送应用。</span>
     </div>
     <div class="row">
-      <label>原始命令（hex）<input type="text" id="cmdTXT" placeholder="如 B5" /></label>
-      <button id="sendcmdbutton">发送</button>
-      <span class="hint">固件仍兼容旧的原始命令，供点亮排查用。</span>
+      <button id="panel-sleep">面板休眠</button>
+      <button id="mcu-reset">MCU 复位</button>
+      <button id="system-off">立即 System OFF</button>
+      <button id="cfg-erase">擦除配置</button>
+      <span class="hint">面板休眠后需复位/唤醒脚才能再刷新(实验性);复位与 System OFF 需按复位键或
+        wakeup 脚唤醒;擦除配置恢复出厂(引脚/驱动/电源模式清零)并自动复位。</span>
     </div>
+    <div class="row">
+      <label>原始命令（hex）<input type="text" id="cmdTXT" placeholder="如 B5,或 9301 3C 设置深睡 60 秒" /></label>
+      <button id="sendcmdbutton">发送</button>
+      <span class="hint">直接发送任意命令字节 + 载荷,用于对照下方命令表排查。</span>
+    </div>
+    <details>
+      <summary>命令参考（固件支持的全部命令）</summary>
+      <table class="cmd-ref">
+        <thead><tr><th>命令</th><th>字节</th><th>载荷</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>SET_PINS</td><td>00</td><td>7 字节引脚</td><td>重设屏幕引脚映射（写入配置页）；顺序为 MOSI/SCLK/CS/DC/RST/BUSY/BS</td></tr>
+          <tr><td>INIT</td><td>01</td><td>驱动 ID</td><td>初始化面板并切换驱动：1=UC8176 黑白、2=V2 黑白、3=UC8276C 黑白红；写入配置页</td></tr>
+          <tr><td>CLEAR</td><td>02</td><td>—</td><td>清空屏幕（全白整屏刷新）</td></tr>
+          <tr><td>SEND_CMD</td><td>03</td><td>面板命令</td><td>向面板直发一条寄存器命令，配合 SEND_DATA/DISPLAY 做点亮排查</td></tr>
+          <tr><td>SEND_DATA</td><td>04</td><td>数据…</td><td>向面板直发数据（跟在 SEND_CMD 后）</td></tr>
+          <tr><td>DISPLAY</td><td>05</td><td>—</td><td>触发面板刷新（直写 RAM 后使用）</td></tr>
+          <tr><td>SLEEP</td><td>06</td><td>—</td><td>面板进入深睡（0x07 0xA5）；之后刷新需复位唤醒，实验性</td></tr>
+          <tr><td>SET_CONFIG</td><td>90</td><td>配置结构</td><td>整包写入配置页（引脚+驱动+保留字节）</td></tr>
+          <tr><td>SYS_RESET</td><td>91</td><td>—</td><td>MCU 软复位，断开当前连接</td></tr>
+          <tr><td>SYS_SLEEP</td><td>92</td><td>—</td><td>立即进入 System OFF；只能靠复位键或 wakeup 脚唤醒</td></tr>
+          <tr><td>SET_POWER</td><td>93</td><td>[模式][延时?s]</td><td>电源模式：0=常驻（持续广播）、1=深睡（断连空闲“延时”秒后 System OFF，默认 60）</td></tr>
+          <tr><td>CFG_ERASE</td><td>99</td><td>—</td><td>擦除配置页并复位，恢复出厂默认</td></tr>
+          <tr><td>STREAM_BEGIN</td><td>B0</td><td>[平面号]</td><td>开始一个平面，设备以 notify 回执状态与平面大小</td></tr>
+          <tr><td>STREAM_DATA</td><td>B1</td><td>PackBits 数据</td><td>追加压缩像素，每包 ≤19 字节，无回执</td></tr>
+          <tr><td>STREAM_END</td><td>B2</td><td>[长度2][校验4][标志1]</td><td>校验解码后的整平面（长度+字节和），标志位 1=刷新；校验不过不刷新</td></tr>
+          <tr><td>STREAM_ABORT</td><td>B3</td><td>—</td><td>放弃当前帧，面板保持原样</td></tr>
+          <tr><td>GET_STATUS</td><td>B5</td><td>—</td><td>查询状态，notify 回执：流状态/平面/已收字节/平面大小/驱动/电源模式/宽限秒数</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">图像路径的 Begin/Data/End 由三个内容模式内部完成，无需手工发送；
+        0x00–0x06 与 0x90–0x99 为原始调试命令。协议完整定义见仓库
+        <code>EPD/EPD_ble.h</code>。</p>
+    </details>
   </section>
 
   <pre id="log"></pre>
