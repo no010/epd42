@@ -146,7 +146,20 @@ function fitFont(ctx, text, start, minPx, maxPx, family, usable) {
 
 function centerText(ctx, text, y, px, family, width) {
   setFont(ctx, px, family);
-  drawText(ctx, text, Math.max(0, (width - textWidth(ctx, text)) / 2), y, px, family);
+  drawText(ctx, text, Math.max(8, (width - textWidth(ctx, text)) / 2), y, px, family);
+}
+
+/** Thick line with a square brush, port of face.rs line() - the outline
+ *  staircase must match the desktop renderer exactly. */
+function thickLine(ctx, x0, y0, x1, y1, width) {
+  const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+  const r = Math.floor(width / 2);
+  for (let s = 0; s <= steps; s++) {
+    const t = steps ? s / steps : 0;
+    const x = Math.round(x0 + t * (x1 - x0));
+    const y = Math.round(y0 + t * (y1 - y0));
+    ctx.fillRect(x - r, y - r, width, width);
+  }
 }
 
 /* ── the face (port of face.py compose) ───────────────────────────────── */
@@ -159,92 +172,106 @@ function minuteText(state) {
   return text;
 }
 
+/** The hourglass, ported line for line from desktop/core/src/face.rs so the
+ *  web face matches the desktop renderer: area-proportional sand (sqrt
+ *  mapping), sand packed against the neck, a symmetric bottom pile, and a
+ *  3px sand stream falling while the timer runs. */
 function drawHourglass(ctx, cx, yTop, height, remaining, running) {
   const frac = Math.max(0, Math.min(1, remaining));
-  const width = Math.floor(height * HG_ASPECT);
-  const x0 = cx - Math.floor(width / 2), x1 = cx + Math.floor(width / 2);
+  const width = Math.round(height * HG_ASPECT);
+  const x0 = cx - Math.floor(width / 2);
+  const x1 = x0 + width;
   const y0 = yTop, y1 = yTop + height;
   const ym = y0 + Math.floor(height / 2);
   const frameHalf = Math.floor(width / 2) + 4;
 
   const sx0 = x0 + HG_INSET, sx1 = x1 - HG_INSET;
   const halfW = (sx1 - sx0) / 2;
-  const topH = (ym - HG_INSET) - (y0 + HG_INSET);
-  const botH = (y1 - HG_INSET) - (ym + HG_INSET);
+  // 沙体上沿贴到下横梁、下沿贴到上横梁（差 1px 接拢轮廓描边）。
+  const topH = (ym - HG_INSET) - (y0 + 1);
+  const botH = (y1 - 1) - (ym + HG_INSET);
 
-  // Top bulb: sand drains OUT through the neck, so the void grows at the top.
-  const sandH = Math.floor(frac * topH);
+  // Area mapping: the triangle's area grows with height², so sqrt makes the
+  // visible sand quantity track the remaining share (8/25 left reads ~1/3 full).
+  const sandH = Math.floor(Math.sqrt(frac) * topH);
   if (sandH >= 1) {
-    const ySurface = ym - HG_INSET - sandH;
+    const surfaceY = ym - HG_INSET - sandH;
     const hw = halfW * (sandH / topH);
     ctx.beginPath();
-    ctx.moveTo(cx - hw, ySurface);
-    ctx.lineTo(cx + hw, ySurface);
-    ctx.lineTo(cx, ym - HG_INSET);
+    ctx.moveTo(cx, ym - HG_INSET);
+    ctx.lineTo(Math.round(cx - hw), surfaceY);
+    ctx.lineTo(Math.round(cx + hw), surfaceY);
     ctx.closePath();
     ctx.fill();
   }
 
-  const pileH = Math.floor((1 - frac) * botH);
+  // Bottom pile mirrors the top void: pile height = (1-√f) of the bulb.
+  const pileH = Math.floor((1 - Math.sqrt(frac)) * botH);
   if (pileH >= 1) {
-    const yCut = y1 - HG_INSET - pileH;
+    const surfaceY = y1 - 1 - pileH;
     const hw = halfW * (1 - pileH / botH);
+    const hl = Math.round(cx - hw), hr = Math.round(cx + hw);
     ctx.beginPath();
-    ctx.moveTo(cx - hw, yCut);
-    ctx.lineTo(cx + hw, yCut);
-    ctx.lineTo(sx1, y1 - HG_INSET);
-    ctx.lineTo(sx0, y1 - HG_INSET);
+    ctx.moveTo(hl, surfaceY);
+    ctx.lineTo(hr, surfaceY);
+    ctx.lineTo(sx1, y1 - 1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(hl, surfaceY);
+    ctx.lineTo(sx0, y1 - 1);
+    ctx.lineTo(sx1, y1 - 1);
     ctx.closePath();
     ctx.fill();
   }
 
-  if (running && 0 < frac && frac < 1) {
-    const pileTop = y1 - HG_INSET - pileH;
-    ctx.beginPath();
-    ctx.moveTo(cx, ym);
-    ctx.lineTo(cx, Math.max(ym, pileTop - 1));
-    ctx.stroke();
-  }
-
-  // Outline on top of the sand so the edges stay crisp.
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(x0, y0); ctx.lineTo(x1, y0); ctx.lineTo(cx, ym); ctx.closePath();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(cx, ym); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1); ctx.closePath();
-  ctx.stroke();
-  ctx.fillRect(cx - frameHalf, y0 - HG_BAR_H, frameHalf * 2, HG_BAR_H);
-  ctx.fillRect(cx - frameHalf, y1, frameHalf * 2, HG_BAR_H);
-}
-
-function drawDots(ctx, state, y, dotPx, width) {
-  const filled = Math.max(0, Math.min(state.pomodoroCount, state.rounds));
-  const current = state.phase === PHASE_WORK ? filled : -1;
-  const text = `第 ${state.pomodoroCount}/${state.rounds} 个`;
-  setFont(ctx, dotPx, CJK_FONT);
-  const textW = textWidth(ctx, text);
-  const gap = 12;
-  const dotW = state.rounds * 2 * DOT_RADIUS + (state.rounds - 1) * gap;
-  let x = Math.max(8, (width - (dotW + 18 + textW)) / 2);
-  const cy = y + DOT_RADIUS;
-  for (let index = 0; index < state.rounds; index++) {
-    const cx = x + DOT_RADIUS + index * (2 * DOT_RADIUS + gap);
-    ctx.beginPath();
-    ctx.arc(cx, cy, DOT_RADIUS, 0, 2 * Math.PI);
-    if (index < filled) {
-      ctx.fill();
-    } else {
-      ctx.stroke();
-      if (index === current) {
-        const radius = Math.max(2, Math.floor(DOT_RADIUS / 3));
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
-        ctx.fill();
-      }
+  // Sand stream: a 3px column from the neck to the pile top.
+  if (running && frac > 0 && frac < 1) {
+    const pileTop = y1 - 1 - pileH;
+    if (pileTop > ym) {
+      ctx.fillRect(cx - 1, ym, 3, pileTop - ym + 1);
     }
   }
-  drawText(ctx, text, x + dotW + 18, y, dotPx, CJK_FONT);
+
+  thickLine(ctx, x0, y0, x1, y0, 3);
+  thickLine(ctx, x1, y0, cx, ym, 3);
+  thickLine(ctx, cx, ym, x0, y0, 3);
+  thickLine(ctx, cx, ym, x0, y1, 3);
+  thickLine(ctx, x0, y1, x1, y1, 3);
+  thickLine(ctx, x1, y1, cx, ym, 3);
+  ctx.fillRect(cx - frameHalf, y0 - HG_BAR_H, frameHalf * 2 + 1, HG_BAR_H + 1);
+  ctx.fillRect(cx - frameHalf, y1, frameHalf * 2 + 1, HG_BAR_H + 1);
+}
+
+/** Round progress as dots only (no text, like the desktop renderer):
+ *  filled = done, hollow with a solid centre = running, hollow = upcoming. */
+function drawDots(ctx, state, y, width) {
+  const rounds = Math.max(1, state.rounds);
+  const filled = Math.min(state.pomodoroCount, rounds);
+  const current = (state.phase === PHASE_WORK && filled < rounds) ? filled : -1;
+  const gap = 12;
+  const dotW = rounds * 2 * DOT_RADIUS + (rounds - 1) * gap;
+  const x = Math.max(8, Math.floor((width - dotW) / 2));
+  const cy = y + DOT_RADIUS;
+  for (let index = 0; index < rounds; index++) {
+    const cx = x + DOT_RADIUS + index * (2 * DOT_RADIUS + gap);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(cx, cy, DOT_RADIUS, 0, 2 * Math.PI);
+    ctx.fill();
+    if (index < filled) continue;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(cx, cy, DOT_RADIUS - 2, 0, 2 * Math.PI);
+    ctx.fill();
+    if (index === current) {
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = '#000';
 }
 
 /** Render the face onto a 400x300 canvas: black ink on paper white. */
@@ -287,7 +314,6 @@ function composeFace(state, canvas, updated) {
                            CJK_FONT, usable);
   const hMinute = metricsOf(ctx, minutePx, CJK_FONT);
 
-  const dotPx = STAMP_PX;
   const hDots = 2 * DOT_RADIUS + 2;
 
   const footer = `今日完成 ${state.cycleTotal} 个番茄`;
@@ -319,9 +345,7 @@ function composeFace(state, canvas, updated) {
   centerText(ctx, minutes, y, minutePx, CJK_FONT, W);
   y += hMinute + gap;
 
-  ctx.lineWidth = 1.5;
-  drawDots(ctx, state, y, dotPx, W);
-  ctx.lineWidth = 1;
+  drawDots(ctx, state, y, W);
   y += hDots + gap;
 
   centerText(ctx, footer, y, footerPx, CJK_FONT, W);
